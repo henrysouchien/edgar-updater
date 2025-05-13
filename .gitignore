@@ -1,0 +1,8 @@
+* 
+!*.py
+!.gitignore
+!README.md
+!requirements.txt
+.ipynb_checkpoints/
+__pycache__/
+.DS_Store
