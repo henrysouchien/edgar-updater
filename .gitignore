@@ -1,5 +1,6 @@
 * 
 !*.py
+!*.xlsm
 !.gitignore
 !README.md
 !requirements.txt
