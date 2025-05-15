@@ -25,9 +25,8 @@ N_10K_EXTRA = 0
 # === SAFE LIMIT TIMES ===
 REQUEST_DELAY = 1  # in seconds
 
-
-# In[ ]:
-
-
+# === EXPORTS ===
+OUTPUT_METRICS_DIR = "metrics"
+EXPORT_UPDATER_DIR = "exports"
 
 

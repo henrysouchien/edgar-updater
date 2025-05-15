@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_from_directory
 from edgar_pipeline import run_edgar_pipeline
 import io
 from contextlib import redirect_stdout
@@ -7,11 +7,15 @@ import json
 import traceback
 from datetime import datetime
 
+# === Load valid tickers ===
 VALID_TICKERS = set()
-
 with open("valid_tickers.csv", "r") as f:
     for line in f.readlines()[1:]:  # Skip header
         VALID_TICKERS.add(line.strip().upper())
+
+# === Define export folder ===
+EXPORT_DIR = "exports"
+os.makedirs(EXPORT_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
@@ -34,6 +38,11 @@ def log_error_json(source, context, exc):
         json.dump(error_info, f, indent=2)
     return log_path
 
+
+# === File download route ===
+@app.route("/download/<filename>")
+def download_file(filename):
+    return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
 
 # === API endpoint ===
 @app.route("/run_pipeline", methods=["POST"])
@@ -72,6 +81,7 @@ def run_pipeline():
 def web_ui():
     output_text = ""
     success_message = ""
+    excel_filename = None
 
     if request.method == "POST":
         try:
@@ -86,6 +96,11 @@ def web_ui():
             excel_file = request.form.get("excel_file") or "Updater_EDGAR.xlsm"
             sheet_name = request.form.get("sheet_name") or "Raw_data"
 
+            # ✅ Build full Excel file path
+            excel_filename = f"Updater_EDGAR.xlsm"
+            excel_file = os.path.join(EXPORT_DIR, excel_filename)
+
+            # ✅ Run pipeline and capture output
             output_buffer = io.StringIO()
             with redirect_stdout(output_buffer):
 
@@ -139,7 +154,7 @@ def web_ui():
                 "Please send an email to support@henrychien.com with the error message and we'll look into it."
             )
 
-    return render_template("form.html", output_text=output_text, success_message=success_message)
+    return render_template("form.html", output_text=output_text, success_message=success_message, excel_filename=excel_filename)
 
 if __name__ == "__main__":
     app.run(port=5000)

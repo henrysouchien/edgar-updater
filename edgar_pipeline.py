@@ -30,7 +30,7 @@ def run_edgar_pipeline(
     #!/usr/bin/env python
     # coding: utf-8
     
-    # In[1]:
+    # In[3]:
     
     
     # === MODULE IMPORTS ===
@@ -63,11 +63,13 @@ def run_edgar_pipeline(
         N_10K,
         N_10Q_EXTRA,
         N_10K_EXTRA,
-        REQUEST_DELAY
+        REQUEST_DELAY,
+        OUTPUT_METRICS_DIR,
+        EXPORT_UPDATER_DIR
     )
     
     
-    # In[2]:
+    # In[56]:
     
     
     # === IMPORTS ===
@@ -76,16 +78,17 @@ def run_edgar_pipeline(
     import re
     from datetime import datetime
     from bs4 import BeautifulSoup
+    import openpyxl
     from openpyxl import load_workbook
     import html
     import time
-    
-    
-    # In[3]:
-    
-    
+    import os
     import json
     from datetime import datetime
+    
+    
+    # In[5]:
+    
     
     # === Add inputs to metrics dictionary ===
     metrics.update({
@@ -98,7 +101,7 @@ def run_edgar_pipeline(
     })
     
     
-    # In[4]:
+    # In[6]:
     
     # === EXTRACTION CONFIG ===
     
@@ -142,7 +145,7 @@ def run_edgar_pipeline(
     # - Change CIK/YEAR/QUARTER above before rerunning
     
     
-    # In[5]:
+    # In[7]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -483,7 +486,7 @@ def run_edgar_pipeline(
         return df
     
     
-    # In[6]:
+    # In[8]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -602,7 +605,7 @@ def run_edgar_pipeline(
         log_metric("fallback_triggered", False)
     
     
-    # In[7]:
+    # In[9]:
     
     
     # === FETCH & PARSE RECENT FILINGS ===================================
@@ -719,7 +722,7 @@ def run_edgar_pipeline(
         accessions_10q = label_10q_accessions(accessions_10q, accessions_10k)
     
     
-    # In[8]:
+    # In[10]:
     
     
     # === FETCH & PARSE RECENT FILINGS ===================================
@@ -787,7 +790,7 @@ def run_edgar_pipeline(
         required_10q_filings = filter_10q_accessions(accessions_10q, YEAR, QUARTER)
     
     
-    # In[9]:
+    # In[12]:
     
     
     # === FETCH & PARSE RECENT FILINGS ===================================
@@ -842,7 +845,7 @@ def run_edgar_pipeline(
         accessions_10k = enrich_10k_accessions_with_fiscal_year(accessions_10k)
     
     
-    # In[10]:
+    # In[13]:
     
     
     # === FETCH & PARSE RECENT FILINGS ===================================
@@ -888,7 +891,7 @@ def run_edgar_pipeline(
         required_10k_filings = filter_10k_accessions(accessions_10k, YEAR, QUARTER)
     
     
-    # In[11]:
+    # In[14]:
     
     
     # === FALLBACK: FETCH & PARSE FILINGS ===================================
@@ -991,7 +994,7 @@ def run_edgar_pipeline(
         print(accessions_10q[:2], accessions_10k[:1])
     
     
-    # In[12]:
+    # In[15]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -1313,7 +1316,7 @@ def run_edgar_pipeline(
     log_metric("extraction_processing_seconds", round(end_total - start_total, 2))
     
     
-    # In[13]:
+    # In[16]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -1393,7 +1396,7 @@ def run_edgar_pipeline(
         print(f"✅ {q['document_period_end']} → {q['label']} (matched FY end {q['fiscal_year_end']})")
     
     
-    # In[14]:
+    # In[17]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -1416,7 +1419,7 @@ def run_edgar_pipeline(
             print(f"⚠️ Could not parse period end for accession {k['accession']}")
     
     
-    # In[15]:
+    # In[18]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -1457,7 +1460,7 @@ def run_edgar_pipeline(
         })
     
     
-    # In[16]:
+    # In[19]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1539,7 +1542,7 @@ def run_edgar_pipeline(
         prior_10k = None
     
     
-    # In[17]:
+    # In[20]:
     
     
     # === NORMAL 10-Q WORKFLOW and 4Q WORKFLOW =============================================
@@ -1628,7 +1631,7 @@ def run_edgar_pipeline(
             print("⚠️ Skipping prior Q1–Q3 10-Q check — not needed in full-year mode.")
     
     
-    # In[18]:
+    # In[21]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1645,7 +1648,7 @@ def run_edgar_pipeline(
         negated_tags = get_negated_label_concepts(CIK, target_10q["accession"], HEADERS)
     
     
-    # In[19]:
+    # In[22]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1676,7 +1679,7 @@ def run_edgar_pipeline(
     log_metric("concept_roles_extracted", len(df_concept_roles))
     
     
-    # In[20]:
+    # In[23]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -1703,7 +1706,7 @@ def run_edgar_pipeline(
         log_metric("fact_category_counts", categorized_Q_fact_counts)
     
     
-    # In[21]:
+    # In[24]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1761,7 +1764,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[22]:
+    # In[25]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1780,7 +1783,7 @@ def run_edgar_pipeline(
     log_metric("negated_labels_extracted", len(df_negated_labels))
     
     
-    # In[23]:
+    # In[26]:
     
     
     # === SHARED LOGIC (Enrichment summary) =============
@@ -1796,7 +1799,7 @@ def run_edgar_pipeline(
         
     
     
-    # In[24]:
+    # In[27]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1810,7 +1813,7 @@ def run_edgar_pipeline(
             df_q3_prior[col] = df_q3_prior[col].fillna("__NONE__")
     
     
-    # In[25]:
+    # In[28]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1843,7 +1846,7 @@ def run_edgar_pipeline(
     
     
     
-    # In[26]:
+    # In[29]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1876,7 +1879,7 @@ def run_edgar_pipeline(
         log_metric("match_rate", {"ytd": match_rate_ytd})
     
     
-    # In[27]:
+    # In[30]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1938,7 +1941,7 @@ def run_edgar_pipeline(
             ]
     
     
-    # In[28]:
+    # In[31]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1992,7 +1995,7 @@ def run_edgar_pipeline(
         print(f"✅ Final 4Q output standardized: {len(df_4q_output)} rows")
     
     
-    # In[29]:
+    # In[32]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2014,7 +2017,7 @@ def run_edgar_pipeline(
         print(f"🔍 Unmatched YTD rows: {len(df_ytd_unmatched)}")
     
     
-    # In[30]:
+    # In[33]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2074,7 +2077,7 @@ def run_edgar_pipeline(
         print(f"✅ Added {len(df_fuzzy_merged)} fuzzy-matched rows to df_merged.")
     
     
-    # In[31]:
+    # In[34]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2096,7 +2099,7 @@ def run_edgar_pipeline(
         df_4q_output = standardize_zip_output(df_merged)
     
     
-    # In[32]:
+    # In[35]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2137,7 +2140,7 @@ def run_edgar_pipeline(
         print(f"🔍 Borderline fuzzy matches (score 70–79): {len(df_borderline_audit)}")
     
     
-    # In[33]:
+    # In[36]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2199,7 +2202,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[34]:
+    # In[37]:
     
     
     # === FINALIZE 4Q COMBINED OUTPUT ==============================
@@ -2238,7 +2241,7 @@ def run_edgar_pipeline(
         log_metric("final_match_rate", match_rate_final_4q)
     
     
-    # In[35]:
+    # In[38]:
     
     
     # === FULL YEAR WORKFLOW =============================================
@@ -2294,7 +2297,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[36]:
+    # In[39]:
     
     
     # === FULL-YEAR WORKFLOW =======================================
@@ -2339,7 +2342,7 @@ def run_edgar_pipeline(
     # TODO: log match diagnostics here (after modularization) - log match rate of different match steps
     
     
-    # In[37]:
+    # In[40]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2376,7 +2379,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[38]:
+    # In[41]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2446,7 +2449,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[39]:
+    # In[42]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2602,7 +2605,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[40]:
+    # In[43]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2643,7 +2646,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[41]:
+    # In[44]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2661,7 +2664,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[42]:
+    # In[45]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2721,7 +2724,7 @@ def run_edgar_pipeline(
         print(f"✅ Fallback match rate: {fallback_match_rate:.1%}")
     
     
-    # In[43]:
+    # In[46]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2743,7 +2746,7 @@ def run_edgar_pipeline(
             print("✅ No collision flags in fallback output")
     
     
-    # In[44]:
+    # In[47]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2776,7 +2779,7 @@ def run_edgar_pipeline(
             print("✅ No overlapping prior values found.")
     
     
-    # In[45]:
+    # In[48]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2810,7 +2813,7 @@ def run_edgar_pipeline(
         print(f"🔍 Found {len(mismatches)} mismatched current values for overlapping prior values.")
     
     
-    # In[46]:
+    # In[49]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2829,7 +2832,7 @@ def run_edgar_pipeline(
         print(f"✅ Result: {len(df_fallback_unique)} fallback matches added after removing {len(overlap_prior_values)} overlapping prior values.")
     
     
-    # In[47]:
+    # In[50]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2861,7 +2864,7 @@ def run_edgar_pipeline(
     # TODO: log match diagnostics here (after modularization) - log match rate of different match steps
     
     
-    # In[48]:
+    # In[51]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2892,7 +2895,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in quarterly mode.")
     
     
-    # In[49]:
+    # In[52]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2930,7 +2933,7 @@ def run_edgar_pipeline(
         print(f"✅ New unmatched current_q/ytd disclosures: {unmatched_facts} out of {total_qytd_facts} ({unmatched_pct:.1%})")
     
     
-    # In[50]:
+    # In[53]:
     
     
     # === SHARED: Collision Audit  ===
@@ -2959,7 +2962,7 @@ def run_edgar_pipeline(
     log_metric("collision_rate", collision_rate)
     
     
-    # In[51]:
+    # In[54]:
     
     
     # === SHARED LOGIC (Apply Visual Logic and Export Dataframe) =============
@@ -3041,13 +3044,16 @@ def run_edgar_pipeline(
     export_df = export_df.drop_duplicates(subset=["current_period_value", "prior_period_value"])
     
     
-    # In[59]:
+    # In[58]:
     
     
     # === FINAL EXPORTS TO MODEL ==================================
     # === Export values to updater file
     
-    import openpyxl
+    # === Set Export Folder and Filename
+    
+    os.makedirs(EXPORT_UPDATER_DIR, exist_ok=True)
+    export_updater_path = os.path.join(EXPORT_UPDATER_DIR, os.path.basename(EXCEL_FILE))
     
     # === Load the Updater workbook
     updater_path = EXCEL_FILE  # Adjust if different
@@ -3109,10 +3115,14 @@ def run_edgar_pipeline(
         sheet.cell(row=idx+2, column=4, value=row.get("presentation_role", ""))  # Presentation information
         sheet.cell(row=idx+2, column=5, value=row.get("collision_flag", 0))      # Collision flag
         
-    # === Save the workbook
-    wb.save(updater_path)
+    # === Save the workbook to export folder
+    wb.save(export_updater_path)
+    print(f"📁 Updater file saved to: {export_updater_path}")
     
-    print(f"📄 Export summary: {QUARTER}Q {YEAR} data from {TICKER} ({CIK}) successfully written to {EXCEL_FILE}")
+    
+    # === Export summary
+    
+    print(f"\n📄 Export summary: {QUARTER}Q {YEAR} data from {TICKER} ({CIK}) successfully written to {EXCEL_FILE}")
     print(f"✅ Data written to sheet Raw_data starting from A2.")
     print(f"📊 Total rows: {len(export_df)}")
     
@@ -3194,7 +3204,7 @@ def run_edgar_pipeline(
             print(f"✅ Period End: {target_10k['document_period_end']} | URL: {target_10k['url']}")
     
     
-    # In[53]:
+    # In[59]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -3206,7 +3216,7 @@ def run_edgar_pipeline(
         print(f"🔍 Rows where both current and prior are missing: {(export_df['current_period_value'].isna() & export_df['prior_period_value'].isna()).sum()}")
     
     
-    # In[54]:
+    # In[60]:
     
     
     from datetime import datetime
@@ -3223,14 +3233,16 @@ def run_edgar_pipeline(
     log_metric("total_processing_seconds", duration)
     
     # === Export summary to JSON ===
-    summary_path = f"{TICKER}_{QUARTER}Q{str(YEAR)[-2:]}_summary_metrics.json"
+    os.makedirs(OUTPUT_METRICS_DIR, exist_ok=True)
+    summary_path = os.path.join(OUTPUT_METRICS_DIR, f"{TICKER}_{QUARTER}Q{str(YEAR)[-2:]}_summary_metrics.json")
+    
     with open(summary_path, "w") as f:
         json.dump(metrics, f, indent=2)
     
     print(f"✅ Exported summary metrics to: {summary_path}")
     
     
-    # In[55]:
+    # In[61]:
     
     
     print(f"\n📊 Final Metrics Dictionary:\n{json.dumps(metrics, indent=2)}")
@@ -3243,10 +3255,14 @@ def run_edgar_pipeline(
     
     
     # In[ ]:
-    
-    
-    
-    
+
+
+
+
+
+
+
+
 
 
     
