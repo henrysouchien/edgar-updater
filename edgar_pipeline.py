@@ -3115,9 +3115,12 @@ def run_edgar_pipeline(
         sheet.cell(row=idx+2, column=4, value=row.get("presentation_role", ""))  # Presentation information
         sheet.cell(row=idx+2, column=5, value=row.get("collision_flag", 0))      # Collision flag
         
-    # === Save the workbook to export folder
+    # === Save the workbook to export folder and main filder
     wb.save(export_updater_path)
     print(f"📁 Updater file saved to: {export_updater_path}")
+
+    wb.save(updater_path)
+    print(f"📁 Updater file also saved to: {updater_path}")
     
     
     # === Export summary
