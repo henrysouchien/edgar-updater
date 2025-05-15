@@ -594,9 +594,301 @@ def run_edgar_pipeline(
     # === If too few filings, fallback to full master index scan
     if len(accessions_10q) < N_10Q or len(accessions_10k) < N_10K:
         print(f"⚠️ Not enough filings from recent submissions — falling back to master index.")
+        use_fallback = True
+        log_metric("fallback_triggered", True)
+    else:
+        use_fallback = False
+        print("✅ Using recent submissions only — fallback not needed.")
+        log_metric("fallback_triggered", False)
     
     
     # In[7]:
+    
+    
+    # === FETCH & PARSE RECENT FILINGS ===================================
+    # === Labels 10-Q accessions from EDGAR with fiscal-end dates and assign quarters ===
+    
+    from datetime import datetime
+    
+    def label_10q_accessions(accessions_10q, accessions_10k):
+        
+    # === Labels 10-Q accessions from EDGAR with fiscal-end dates and assign quarters ===
+        """
+        Assigns fiscal year-end, quarter, and label metadata to a list of 10-Q accessions 
+        using the company's known 10-K fiscal year-end dates.
+    
+        This function matches each 10-Q's 'report_date' (document period end) to the closest 
+        fiscal year-end from available 10-Ks. It then calculates the quarter number (Q1, Q2, Q3) 
+        based on the number of days between the report date and fiscal year-end. Finally, it assigns:
+          - 'fiscal_year_end' (YYYY-MM-DD)
+          - 'quarter' (e.g., "Q2")
+          - 'label' (e.g., "2Q24")
+          - 'year' (based on the 10-Q's report date)
+    
+        This metadata is used to pre-classify filings before downloading or parsing their contents,
+        enabling faster and more selective downstream processing.
+    
+        Args:
+            accessions_10q (list of dict): List of 10-Q filings, each with a 'report_date'.
+            accessions_10k (list of dict): List of 10-K filings, each with a 'report_date'.
+    
+        Returns:
+            list of dict: Enriched list of 10-Q filings with 'fiscal_year_end', 'quarter', 'label', and 'year'.
+    
+        Example:
+            label_10q_accessions(accessions_10q, accessions_10k)
+            >> accessions_10q[0]['label'] → "3Q24"
+            >> accessions_10q[0]['fiscal_year_end'] → "2024-12-31"
+        """  
+    
+        # === Extract and sort valid fiscal year-end dates from 10-Ks ===
+        fiscal_year_ends = []
+        
+        for entry in accessions_10k:
+            fy_date = parse_date(entry["report_date"])
+            if fy_date:
+                fiscal_year_ends.append(fy_date)
+        
+        fiscal_year_ends = sorted(fiscal_year_ends, reverse=True)
+        
+        if not fiscal_year_ends:
+            raise ValueError("No valid fiscal year-end dates found in 10-Ks.")
+        
+        # === Match each 10-Q to its fiscal year and assign quarter label ===
+        print("\n📊 Matching 10-Qs to fiscal year-end and labeling quarters based off report date:")
+        
+        for q in accessions_10q:
+            q_date = parse_date(q["report_date"])
+            if not q_date:
+                q["quarter"] = None
+                q["label"] = None
+                continue
+        
+            # Match to the fiscal year that this 10-Q falls into — first fiscal year-end after Q end
+            
+            # Prefer fiscal year-ends >= Q date (standard case)
+            candidates = [fy for fy in fiscal_year_ends if fy >= q_date]
+            
+            if candidates:
+                matched_fy = min(candidates)
+                used_fallback = False
+            else:
+                # Fallback: use latest fiscal year-end before Q date
+                candidates = [fy for fy in fiscal_year_ends if fy < q_date]
+                matched_fy = max(candidates) if candidates else None
+                used_fallback = True
+            
+            # 🧠 Shift forward if using fallback (e.g., using FY23 to label FY24)
+            if matched_fy and used_fallback:
+                matched_fy = matched_fy.replace(year=matched_fy.year + 1)
+        
+            if not matched_fy:
+                print(f"⚠️ No matching fiscal year-end found for 10-Q ending {q['report_date']}")
+                q["quarter"] = None
+                q["label"] = None
+                continue
+        
+            # Use day-based logic to assign correct quarter
+            days_diff = (matched_fy - q_date).days
+        
+            if 70 <= days_diff <= 120:
+                quarter = "Q3"
+            elif 160 <= days_diff <= 200:
+                quarter = "Q2"
+            elif 250 <= days_diff <= 300:
+                quarter = "Q1"
+            else:
+                print(f"⚠️ Unexpected delta ({days_diff} days) between {matched_fy.strftime('%Y-%m-%d')} and {q_date.strftime('%Y-%m-%d')} — nonstandard quarter")
+                q["quarter"] = None
+                q["label"] = None
+                q["non_standard_period"] = True
+                continue
+        
+            # Apply labels to the quarterly filings
+            q["fiscal_year_end"] = matched_fy
+            q["quarter"] = quarter
+            q["calendar_year"] = q_date.year    #Note: Calendar year NOT fiscal year
+            q["label"] = f"{quarter[1:]}Q{str(matched_fy.year)[-2:]}"  # e.g. "Q1" + "25" → "1Q25" #Uses fiscal year match
+        
+            print(f"✅ {q['report_date']} → {q['label']} (matched FY end {q['fiscal_year_end']})")
+            
+        return accessions_10q
+    
+    # === LABEL 10Q ACCESSIONS ===
+    if not use_fallback:
+        accessions_10q = label_10q_accessions(accessions_10q, accessions_10k)
+    
+    
+    # In[8]:
+    
+    
+    # === FETCH & PARSE RECENT FILINGS ===================================
+    # === Filter for required 10-Q's for workflow ===================================
+    
+    def filter_10q_accessions(accessions_10q, fiscal_year, quarter):
+        """
+        Filters 10-Q accessions based on fiscal year and quarter for quarterly workflows.
+    
+        This function uses the 'quarter' and 'fiscal_year_end' fields assigned during labeling,
+        and extracts the fiscal year from 'fiscal_year_end' for matching.
+    
+        Parameters:
+            accessions_10q (list of dict): List of labeled 10-Q filings
+            fiscal_year (int): Target fiscal year (e.g., 2025)
+            quarter (int): Target fiscal quarter number (1–4)
+    
+        Returns:
+            list of dict: Filtered 10-Q filings needed for processing
+        """
+    
+        # === Build list of (quarter, fiscal_year) targets ===
+        targets = []
+    
+        if quarter == 4:
+            # Q3 and Q2 of current and prior fiscal years
+            for q in [3, 2]:
+                targets.append((f"Q{q}", fiscal_year))
+                targets.append((f"Q{q}", fiscal_year - 1))
+                
+        else:
+            # Target quarter
+            targets.append((f"Q{quarter}", fiscal_year))
+        
+            # Prior quarter
+            if quarter > 1:
+                targets.append((f"Q{quarter - 1}", fiscal_year))
+            else:
+                targets.append(("Q4", fiscal_year - 1))
+        
+            # YoY same quarter
+            targets.append((f"Q{quarter}", fiscal_year - 1))
+        
+            # YoY prior quarter
+            if quarter > 1:
+                targets.append((f"Q{quarter - 1}", fiscal_year - 1))
+            else:
+                targets.append(("Q4", fiscal_year - 2))
+    
+        # === Filter using parsed fiscal year from fiscal_year_end
+        filtered = [
+            q for q in accessions_10q
+            if (
+                q.get("quarter") in ["Q1", "Q2", "Q3"] and
+                q.get("fiscal_year_end") and
+                (q["quarter"], q["fiscal_year_end"].year) in targets
+            )
+        ]
+    
+        print(f"✅ Selected {len(filtered)} 10-Q filings for processing.")
+        return filtered
+        
+    # === FILTER FOR REQUIRED 10Q ACCESSIONS ===
+    if not use_fallback:
+        required_10q_filings = filter_10q_accessions(accessions_10q, YEAR, QUARTER)
+    
+    
+    # In[9]:
+    
+    
+    # === FETCH & PARSE RECENT FILINGS ===================================
+    # === Label 10K's with fiscal year data ===================================
+    
+    def enrich_10k_accessions_with_fiscal_year(accessions_10k):
+    # === Enrich 10-K results with fiscal year metadata ===
+    # Gathers fiscal year end date from recent 10-K filings
+        
+        """
+        Enriches a list of 10-K accessions with fiscal metadata based on their report dates.
+        
+        For each 10-K, this function parses the 'report_date' (or 'document_period_end') to assign:
+          - 'year': The fiscal year (YYYY)
+          - 'fiscal_year_end': The formatted fiscal year-end date (e.g., 'December 31')
+        
+        This metadata enables accurate quarter matching and fiscal alignment without requiring
+        full .htm downloads or XBRL parsing.
+        
+        Args:
+            accessions_10k (list of dict): A list of 10-K filings, each containing at least 'report_date'
+                                           (from SEC JSON) or 'document_period_end' (from enriched filings).
+        
+        Returns:
+            list of dict: The enriched accessions list, with 'year' and 'fiscal_year_end' fields added.
+        
+        Example:
+            enrich_10k_accessions_with_fiscal_year(accessions_10k)
+            >> accessions_10k[0]['fiscal_year_end'] → "December 31"
+            >> accessions_10k[0]['year'] → 2023
+        """
+    
+        print("\n🛠 Enriching 10-Ks with fiscal year and fiscal year-end...")
+        
+        for k in accessions_10k:
+            period_end = k.get("report_date")
+            dt = parse_date(period_end)
+        
+            if dt:
+                k["year"] = dt.year # note this is FISCAL year
+                k["fiscal_year_end"] = dt
+                print(f"✅ {period_end} → Fiscal Year {k['year']} | Fiscal Year End: {k['fiscal_year_end']}")
+            else:
+                k["year"] = None
+                k["fiscal_year_end"] = None
+                print(f"⚠️ Could not parse period end for accession {k['accession']}")
+                
+        return accessions_10k
+    
+    # === ENRICH 10K ACCESSIONS WITH FISCAL YEAR METADATA ===
+    if not use_fallback:
+        accessions_10k = enrich_10k_accessions_with_fiscal_year(accessions_10k)
+    
+    
+    # In[10]:
+    
+    
+    # === FETCH & PARSE RECENT FILINGS ===================================
+    # === Filter for required 10-K filings ===================================
+    
+    def filter_10k_accessions(accessions_10k, fiscal_year, quarter):
+        """
+        Filters 10-K accessions for workflows that require full-year and YoY start-date rollforward.
+    
+        For 4Q workflows, returns 10-Ks for:
+          - current fiscal year
+          - prior fiscal year
+          - prior-prior fiscal year
+    
+        For Q1–Q3, returns an empty list (10-Ks not used).
+    
+        Parameters:
+            accessions_10k (list of dict): List of 10-K filings with 'fiscal_year_end' (e.g. "2025-01-26")
+            fiscal_year (int): Target fiscal year (e.g., 2025)
+            quarter (int): Target fiscal quarter (1–4)
+    
+        Returns:
+            list of dict: Filtered 10-Ks needed for processing
+        """
+    
+        if quarter == 4:
+            needed_years = {fiscal_year, fiscal_year - 1, fiscal_year - 2}
+        else:
+            needed_years = {fiscal_year - 1, fiscal_year - 2} #Required 10-K's for quarterly workflow
+    
+        filtered = [
+            k for k in accessions_10k
+            if (
+                k["year"] in needed_years
+            )
+        ]
+    
+        print(f"✅ Selected {len(filtered)} 10-K filings for processing.")
+        return filtered
+    
+    # === FILTER FOR REQUIRED 10Q ACCESSIONS ===
+    if not use_fallback:
+        required_10k_filings = filter_10k_accessions(accessions_10k, YEAR, QUARTER)
+    
+    
+    # In[11]:
     
     
     # === FALLBACK: FETCH & PARSE FILINGS ===================================
@@ -699,7 +991,7 @@ def run_edgar_pipeline(
         print(accessions_10q[:2], accessions_10k[:1])
     
     
-    # In[9]:
+    # In[12]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -866,7 +1158,6 @@ def run_edgar_pipeline(
         ]
         
         if htm_items:
-    
             # Sort descending by file size
             htm_items.sort(key=lambda x: int(x["size"]), reverse=True)
             largest_htm = htm_items[0]["name"]
@@ -879,6 +1170,7 @@ def run_edgar_pipeline(
                 if data["document_period_end"] and len(data["facts"]) >= 50:
                     # Fetch presentation roles from .pre.xml                    
                     concept_roles = get_concept_roles_from_presentation(cik, accession_number, headers)
+                    
                     print(f"✅ {full_url} → Period End: {data['document_period_end']}")
                     print(f"🔎 Extracted {len(data['facts'])} facts")
                 
@@ -997,11 +1289,21 @@ def run_edgar_pipeline(
     
     # === EXTRACT INFORMATION FROM 10-Qs and 10-K's ===
     
-    print("\n📘 Processing 10-Qs...")
-    results_10q = extract_filing_batch(accessions_10q, CIK, HEADERS, "10-Q")
+    if not use_fallback:
+        print("\n📘 Processing 10-Qs...")
+        results_10q = extract_filing_batch(required_10q_filings, CIK, HEADERS, "10-Q")
     
-    print("\n📕 Processing 10-Ks...")
-    results_10k = extract_filing_batch(accessions_10k, CIK, HEADERS, form_type="10-K")
+        print("\n📕 Processing 10-Ks...")
+        results_10k = extract_filing_batch(required_10k_filings, CIK, HEADERS, "10-K")
+        
+    else:    
+        print("\n⚠️ Skipping filtered extraction — fallback mode will parse full lists.")
+        
+        print("\n📘 Processing 10-Qs...")
+        results_10q = extract_filing_batch(accessions_10q, CIK, HEADERS, "10-Q")
+        
+        print("\n📕 Processing 10-Ks...")
+        results_10k = extract_filing_batch(accessions_10k, CIK, HEADERS, form_type="10-K")
     
     # === CALCULATING PROCESSING TIME ===
     
@@ -1011,7 +1313,7 @@ def run_edgar_pipeline(
     log_metric("extraction_processing_seconds", round(end_total - start_total, 2))
     
     
-    # In[10]:
+    # In[13]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -1043,8 +1345,22 @@ def run_edgar_pipeline(
             continue
     
         # Match to the fiscal year that this 10-Q falls into — first fiscal year-end after Q end
-        candidates = [fy for fy in fiscal_year_ends if fy > q_date]
-        matched_fy = min(candidates) if candidates else None
+        
+        # Prefer fiscal year-ends >= Q date (standard case)
+        candidates = [fy for fy in fiscal_year_ends if fy >= q_date]
+        
+        if candidates:
+            matched_fy = min(candidates)
+            used_fallback = False
+        else:
+            # Fallback: use latest fiscal year-end before Q date
+            candidates = [fy for fy in fiscal_year_ends if fy < q_date]
+            matched_fy = max(candidates) if candidates else None
+            used_fallback = True
+        
+        # 🧠 Shift forward if using fallback (e.g., using FY23 to label FY24)
+        if matched_fy and used_fallback:
+            matched_fy = matched_fy.replace(year=matched_fy.year + 1)
     
         if not matched_fy:
             print(f"⚠️ No matching fiscal year-end found for 10-Q ending {q['document_period_end']}")
@@ -1069,7 +1385,7 @@ def run_edgar_pipeline(
             continue
     
         # Apply labels to the quarterly filings
-        q["fiscal_year_end"] = matched_fy.strftime("%Y-%m-%d")
+        q["fiscal_year_end"] = matched_fy
         q["quarter"] = quarter
         q["year"] = q_date.year    #Note: Fiscal year
         q["label"] = f"{quarter[1:]}Q{str(matched_fy.year)[-2:]}"  # e.g. "Q1" + "25" → "1Q25" #Uses fiscal year match
@@ -1077,7 +1393,7 @@ def run_edgar_pipeline(
         print(f"✅ {q['document_period_end']} → {q['label']} (matched FY end {q['fiscal_year_end']})")
     
     
-    # In[11]:
+    # In[14]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -1092,7 +1408,7 @@ def run_edgar_pipeline(
     
         if dt:
             k["year"] = dt.year
-            k["fiscal_year_end"] = dt.strftime("%B %d")  # e.g., "December 31"
+            k["fiscal_year_end"] = dt
             print(f"✅ {period_end} → Fiscal Year {k['year']} | Fiscal Year End: {k['fiscal_year_end']}")
         else:
             k["year"] = None
@@ -1100,7 +1416,7 @@ def run_edgar_pipeline(
             print(f"⚠️ Could not parse period end for accession {k['accession']}")
     
     
-    # In[12]:
+    # In[15]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -1141,7 +1457,7 @@ def run_edgar_pipeline(
         })
     
     
-    # In[13]:
+    # In[16]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1163,7 +1479,7 @@ def run_edgar_pipeline(
         # Use fiscal year end from selected 10-K. 
         # Note: fiscal_year_end is in YYYY-MM-DD string format (assigned during quarter labeling step)
         
-        fye_target = datetime.strptime(target_10k["document_period_end"], "%B %d, %Y").strftime("%Y-%m-%d")
+        fye_target = target_10k["fiscal_year_end"]
         
         # Select current year Q1–Q3 10-Qs by fiscal year end
         q1_entry = next((q for q in results_10q if q.get("quarter") == "Q1" and q.get("fiscal_year_end") == fye_target), None)
@@ -1223,7 +1539,7 @@ def run_edgar_pipeline(
         prior_10k = None
     
     
-    # In[14]:
+    # In[17]:
     
     
     # === NORMAL 10-Q WORKFLOW and 4Q WORKFLOW =============================================
@@ -1272,7 +1588,7 @@ def run_edgar_pipeline(
             print(f"\n⚠️ Could not find prior 10-K.")
     
         # Use the prior 10-K document period end as fiscal year end anchor
-        fye_prior = datetime.strptime(prior_10k["document_period_end"], "%B %d, %Y").strftime("%Y-%m-%d") if prior_10k else None
+        fye_prior = prior_10k["fiscal_year_end"] if prior_10k else None
     
         # Match prior 10-Qs with the same fiscal year end and correct quarter
         q1_prior_entry = next((q for q in results_10q if q.get("quarter") == "Q1" and q.get("fiscal_year_end") == fye_prior), None)
@@ -1312,7 +1628,7 @@ def run_edgar_pipeline(
             print("⚠️ Skipping prior Q1–Q3 10-Q check — not needed in full-year mode.")
     
     
-    # In[15]:
+    # In[18]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1329,7 +1645,7 @@ def run_edgar_pipeline(
         negated_tags = get_negated_label_concepts(CIK, target_10q["accession"], HEADERS)
     
     
-    # In[16]:
+    # In[19]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1360,7 +1676,7 @@ def run_edgar_pipeline(
     log_metric("concept_roles_extracted", len(df_concept_roles))
     
     
-    # In[17]:
+    # In[20]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -1387,7 +1703,7 @@ def run_edgar_pipeline(
         log_metric("fact_category_counts", categorized_Q_fact_counts)
     
     
-    # In[18]:
+    # In[21]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1445,7 +1761,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[19]:
+    # In[22]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1464,7 +1780,7 @@ def run_edgar_pipeline(
     log_metric("negated_labels_extracted", len(df_negated_labels))
     
     
-    # In[20]:
+    # In[23]:
     
     
     # === SHARED LOGIC (Enrichment summary) =============
@@ -1480,7 +1796,7 @@ def run_edgar_pipeline(
         
     
     
-    # In[21]:
+    # In[24]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1494,7 +1810,7 @@ def run_edgar_pipeline(
             df_q3_prior[col] = df_q3_prior[col].fillna("__NONE__")
     
     
-    # In[22]:
+    # In[25]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1527,7 +1843,7 @@ def run_edgar_pipeline(
     
     
     
-    # In[23]:
+    # In[26]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1560,7 +1876,7 @@ def run_edgar_pipeline(
         log_metric("match_rate", {"ytd": match_rate_ytd})
     
     
-    # In[24]:
+    # In[27]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1622,7 +1938,7 @@ def run_edgar_pipeline(
             ]
     
     
-    # In[25]:
+    # In[28]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1676,7 +1992,7 @@ def run_edgar_pipeline(
         print(f"✅ Final 4Q output standardized: {len(df_4q_output)} rows")
     
     
-    # In[26]:
+    # In[29]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1698,7 +2014,7 @@ def run_edgar_pipeline(
         print(f"🔍 Unmatched YTD rows: {len(df_ytd_unmatched)}")
     
     
-    # In[27]:
+    # In[30]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1758,7 +2074,7 @@ def run_edgar_pipeline(
         print(f"✅ Added {len(df_fuzzy_merged)} fuzzy-matched rows to df_merged.")
     
     
-    # In[28]:
+    # In[31]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1780,7 +2096,7 @@ def run_edgar_pipeline(
         df_4q_output = standardize_zip_output(df_merged)
     
     
-    # In[29]:
+    # In[32]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1821,7 +2137,7 @@ def run_edgar_pipeline(
         print(f"🔍 Borderline fuzzy matches (score 70–79): {len(df_borderline_audit)}")
     
     
-    # In[30]:
+    # In[33]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1883,7 +2199,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[31]:
+    # In[34]:
     
     
     # === FINALIZE 4Q COMBINED OUTPUT ==============================
@@ -1922,7 +2238,7 @@ def run_edgar_pipeline(
         log_metric("final_match_rate", match_rate_final_4q)
     
     
-    # In[32]:
+    # In[35]:
     
     
     # === FULL YEAR WORKFLOW =============================================
@@ -1978,7 +2294,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[33]:
+    # In[36]:
     
     
     # === FULL-YEAR WORKFLOW =======================================
@@ -2023,7 +2339,7 @@ def run_edgar_pipeline(
     # TODO: log match diagnostics here (after modularization) - log match rate of different match steps
     
     
-    # In[34]:
+    # In[37]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2060,7 +2376,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[35]:
+    # In[38]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2130,7 +2446,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[36]:
+    # In[39]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2286,7 +2602,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[37]:
+    # In[40]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2327,7 +2643,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[38]:
+    # In[41]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2345,7 +2661,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[39]:
+    # In[42]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2405,7 +2721,7 @@ def run_edgar_pipeline(
         print(f"✅ Fallback match rate: {fallback_match_rate:.1%}")
     
     
-    # In[40]:
+    # In[43]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2427,7 +2743,7 @@ def run_edgar_pipeline(
             print("✅ No collision flags in fallback output")
     
     
-    # In[41]:
+    # In[44]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2460,7 +2776,7 @@ def run_edgar_pipeline(
             print("✅ No overlapping prior values found.")
     
     
-    # In[42]:
+    # In[45]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2494,7 +2810,7 @@ def run_edgar_pipeline(
         print(f"🔍 Found {len(mismatches)} mismatched current values for overlapping prior values.")
     
     
-    # In[43]:
+    # In[46]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2513,7 +2829,7 @@ def run_edgar_pipeline(
         print(f"✅ Result: {len(df_fallback_unique)} fallback matches added after removing {len(overlap_prior_values)} overlapping prior values.")
     
     
-    # In[44]:
+    # In[47]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2545,7 +2861,7 @@ def run_edgar_pipeline(
     # TODO: log match diagnostics here (after modularization) - log match rate of different match steps
     
     
-    # In[45]:
+    # In[48]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2576,7 +2892,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in quarterly mode.")
     
     
-    # In[46]:
+    # In[49]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2614,7 +2930,7 @@ def run_edgar_pipeline(
         print(f"✅ New unmatched current_q/ytd disclosures: {unmatched_facts} out of {total_qytd_facts} ({unmatched_pct:.1%})")
     
     
-    # In[47]:
+    # In[50]:
     
     
     # === SHARED: Collision Audit  ===
@@ -2643,7 +2959,7 @@ def run_edgar_pipeline(
     log_metric("collision_rate", collision_rate)
     
     
-    # In[48]:
+    # In[51]:
     
     
     # === SHARED LOGIC (Apply Visual Logic and Export Dataframe) =============
@@ -2725,7 +3041,7 @@ def run_edgar_pipeline(
     export_df = export_df.drop_duplicates(subset=["current_period_value", "prior_period_value"])
     
     
-    # In[49]:
+    # In[59]:
     
     
     # === FINAL EXPORTS TO MODEL ==================================
@@ -2744,6 +3060,16 @@ def run_edgar_pipeline(
     for row in sheet["A2:E5000"]:
         for cell in row:
             cell.value = None
+    
+    # === Write metadata in columns G–H (optional)
+    sheet["G1"] = "Ticker"
+    sheet["H1"] = TICKER
+    sheet["G2"] = "Year"
+    sheet["H2"] = YEAR
+    sheet["G3"] = "Quarter"
+    sheet["H3"] = QUARTER
+    sheet["G4"] = "Full Year Mode"
+    sheet["H4"] = str(FULL_YEAR_MODE)
     
     # === Choose the correct dataframe
     if FOUR_Q_MODE and FULL_YEAR_MODE:
@@ -2787,14 +3113,12 @@ def run_edgar_pipeline(
     wb.save(updater_path)
     
     print(f"📄 Export summary: {QUARTER}Q {YEAR} data from {TICKER} ({CIK}) successfully written to {EXCEL_FILE}")
-    print(f"✅ Successfully exported to {updater_path}, sheet Raw_data starting from A2.")
+    print(f"✅ Data written to sheet Raw_data starting from A2.")
     print(f"📊 Total rows: {len(export_df)}")
     
     # === Show filing references for quarterly mode
     
     if not FOUR_Q_MODE and target_10q:
-        print("\n🔗 Target 10-Q Filing Reference:")
-        print(f"✅ {target_10q['label']} | Period End: {target_10q['document_period_end']} | URL: {target_10q['url']}")
     
         print("\n🔗 Target 10-Q Filing Summary:")
         print(f"  • Ticker     : {TICKER}")
@@ -2804,46 +3128,18 @@ def run_edgar_pipeline(
         print(f"  • Period End : {target_10q.get('document_period_end', 'N/A')}")
         print(f"  • Accession  : {target_10q.get('accession', 'N/A')}")
         print(f"  • URL        : {target_10q.get('url', 'N/A')}")
-    
-        if prior_10q:
-            print(f"\n✅ Found prior 10-Q:")
-            print(f"✅ {prior_10q['label']} | Period End: {prior_10q['document_period_end']} | URL: {prior_10q['url']}")
+        
+        if DEBUG_MODE:
+            print("\n🔗 Target 10-Q Filing Reference:")
+            print(f"✅ {target_10q['label']} | Period End: {target_10q['document_period_end']} | URL: {target_10q['url']}")
+            
+            if prior_10q:
+                print(f"\n✅ Found prior 10-Q:")
+                print(f"✅ {prior_10q['label']} | Period End: {prior_10q['document_period_end']} | URL: {prior_10q['url']}")
     
     # === Show filing references for 4Q mode
     
     if FOUR_Q_MODE and not FULL_YEAR_MODE:
-        print("\n🔗 Target 10-K Filing Reference:")
-        print(f"✅ Period End: {target_10k['document_period_end']} | URL: {target_10k['url']}")
-    
-        print("\n🔗 Current Year 10-Qs (Q1–Q3):")
-        print(f"  - Q1: {q1_entry['document_period_end']} | URL: {q1_entry['url']}")
-        print(f"  - Q2: {q2_entry['document_period_end']} | URL: {q2_entry['url']}")
-        print(f"  - Q3: {q3_entry['document_period_end']} | URL: {q3_entry['url']}")
-    
-        print("\n🔗 Prior Year 10-K Filing Reference:")
-        print(f"✅ Period End: {prior_10k['document_period_end']} | URL: {prior_10k['url']}")
-    
-        print("\n🔗 Prior Year 10-Qs (Q1–Q3):")
-        if q1_prior_entry:
-            print(f"  - Q1: {q1_prior_entry['document_period_end']} | URL: {q1_prior_entry['url']}")
-        else:
-            print("  - Q1: ❌ Missing")
-        
-        if q2_prior_entry:
-            print(f"  - Q2: {q2_prior_entry['document_period_end']} | URL: {q2_prior_entry['url']}")
-        else:
-            print("  - Q2: ❌ Missing")
-        
-        if q3_prior_entry:
-            print(f"  - Q3: {q3_prior_entry['document_period_end']} | URL: {q3_prior_entry['url']}")
-        else:
-            print("  - Q3: ❌ Missing")
-    
-    # === FY Reference Summary for 4Q and Full Year ===
-        
-    if FOUR_Q_MODE and FULL_YEAR_MODE:
-        print("\n🔗 Target 10-K Filing Reference:")
-        print(f"✅ Period End: {target_10k['document_period_end']} | URL: {target_10k['url']}")
     
         print("\n🔗 Target 10-K Filing Summary:")
         print(f"  • Ticker     : {TICKER}")
@@ -2853,19 +3149,64 @@ def run_edgar_pipeline(
         print(f"  • Accession  : {target_10k['accession']}")
         print(f"  • URL        : {target_10k['url']}")
     
+        if DEBUG_MODE:
     
-    # In[50]:
+            print("\n🔗 Target 10-K Filing Reference:")
+            print(f"✅ Period End: {target_10k['document_period_end']} | URL: {target_10k['url']}")
+            
+            print("\n🔗 Current Year 10-Qs (Q1–Q3):")
+            if q1_entry:
+                print(f"  - Q1: {q1_entry['document_period_end']} | URL: {q1_entry['url']}")
+        
+            if q2_entry:    
+                print(f"  - Q2: {q2_entry['document_period_end']} | URL: {q2_entry['url']}")
+                
+            if q3_entry:   
+                print(f"  - Q3: {q3_entry['document_period_end']} | URL: {q3_entry['url']}")
+        
+            print("\n🔗 Prior Year 10-K Filing Reference:")
+            print(f"✅ Period End: {prior_10k['document_period_end']} | URL: {prior_10k['url']}")
+        
+            print("\n🔗 Prior Year 10-Qs (Q1–Q3):")
+            if q1_prior_entry:
+                print(f"  - Q1: {q1_prior_entry['document_period_end']} | URL: {q1_prior_entry['url']}")
+            
+            if q2_prior_entry:
+                print(f"  - Q2: {q2_prior_entry['document_period_end']} | URL: {q2_prior_entry['url']}")
+            
+            if q3_prior_entry:
+                print(f"  - Q3: {q3_prior_entry['document_period_end']} | URL: {q3_prior_entry['url']}")
+    
+    # === FY Reference Summary for 4Q and Full Year ===
+        
+    if FOUR_Q_MODE and FULL_YEAR_MODE:
+    
+        print("\n🔗 Target 10-K Filing Summary:")
+        print(f"  • Ticker     : {TICKER}")
+        print(f"  • CIK        : {CIK}")
+        print(f"  • Form       : {target_10k['form']}")
+        print(f"  • Period End : {target_10k['document_period_end']}")
+        print(f"  • Accession  : {target_10k['accession']}")
+        print(f"  • URL        : {target_10k['url']}")
+    
+        if DEBUG_MODE:
+            print("\n🔗 Target 10-K Filing Reference:")
+            print(f"✅ Period End: {target_10k['document_period_end']} | URL: {target_10k['url']}")
+    
+    
+    # In[53]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
     #Check dataframe export is clean and complete
     
-    print(f"🔍 Exported DataFrame contains {export_df.shape[0]} rows × {export_df.shape[1]} columns.")
-    print(f"🔍 Rows with missing tag: {(export_df['tag'].isna() | (export_df['tag'].str.strip() == '')).sum()}")
-    print(f"🔍 Rows where both current and prior are missing: {(export_df['current_period_value'].isna() & export_df['prior_period_value'].isna()).sum()}")
+    if DEBUG_MODE:
+        print(f"🔍 Exported DataFrame contains {export_df.shape[0]} rows × {export_df.shape[1]} columns.")
+        print(f"🔍 Rows with missing tag: {(export_df['tag'].isna() | (export_df['tag'].str.strip() == '')).sum()}")
+        print(f"🔍 Rows where both current and prior are missing: {(export_df['current_period_value'].isna() & export_df['prior_period_value'].isna()).sum()}")
     
     
-    # In[51]:
+    # In[54]:
     
     
     from datetime import datetime
@@ -2889,7 +3230,7 @@ def run_edgar_pipeline(
     print(f"✅ Exported summary metrics to: {summary_path}")
     
     
-    # In[52]:
+    # In[55]:
     
     
     print(f"\n📊 Final Metrics Dictionary:\n{json.dumps(metrics, indent=2)}")
@@ -2898,6 +3239,36 @@ def run_edgar_pipeline(
     # In[ ]:
     
     
+    
+    
+    
+    # In[ ]:
+    
+    
+    
+    
+
+
+    
+    
+
+    
+    
+    
+
+    
+
+
+
+
+
+
+
+
+    
+    
+    
+
     
     
 
