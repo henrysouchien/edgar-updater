@@ -27,10 +27,10 @@ def run_edgar_pipeline(
 
     # ... FULL pipeline logic from your Jupyter notebook pasted here, unchanged ...
 
-    #!/usr/bin/env python
+     #!/usr/bin/env python
     # coding: utf-8
     
-    # In[ ]:
+    # In[59]:
     
     
     # === MODULE IMPORTS ===
@@ -69,7 +69,7 @@ def run_edgar_pipeline(
     )
     
     
-    # In[ ]:
+    # In[60]:
     
     
     # === IMPORTS ===
@@ -87,7 +87,7 @@ def run_edgar_pipeline(
     from datetime import datetime
     
     
-    # In[ ]:
+    # In[61]:
     
     
     # === Add inputs to metrics dictionary ===
@@ -101,13 +101,7 @@ def run_edgar_pipeline(
     })
     
     
-    # In[ ]:
-    
-    
-    
-    
-    
-    # In[ ]:
+    # In[62]:
     
     # === EXTRACTION CONFIG ===
     
@@ -151,7 +145,7 @@ def run_edgar_pipeline(
     # - Change CIK/YEAR/QUARTER above before rerunning
     
     
-    # In[ ]:
+    # In[63]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -168,25 +162,38 @@ def run_edgar_pipeline(
     def enrich_filing(filing):
     
         """
-        Enriches a parsed EDGAR filing by categorizing all XBRL facts into time-based categories
-        (e.g., current quarter, prior year), applying context dimension mapping, and labeling
-        period types and axes. Returns the result as a fully labeled pandas DataFrame.
+        Enriches a parsed EDGAR 10-Q or 10-K filing by categorizing each XBRL fact into structured
+        financial periods and tagging it with relevant metadata for modeling and analysis.
+    
+        This includes:
+        - Resolving fiscal year and quarter start/end boundaries from prior filings
+        - Mapping XBRL contextRefs to actual date ranges (duration or instant)
+        - Assigning presentation roles and dimension axes (segment, geo, product, etc.)
+        - Categorizing facts into matched time periods: current_q, prior_q, YTD, FY, etc.
     
         Args:
-            filing (dict): Parsed filing dictionary containing keys like 'facts', 'context_blocks',
-                           'form', 'document_period_end', 'accession', and 'concept_roles'.
+            filing (dict): A parsed filing dictionary containing:
+                - 'facts': List of extracted XBRL facts
+                - 'context_blocks': Dict of raw XBRL contextRef blocks
+                - 'document_period_end': DEI DocumentPeriodEndDate (string)
+                - 'form': Filing type (e.g., "10-Q" or "10-K")
+                - 'accession': SEC accession number
+                - 'concept_roles': Presentation role mapping from .pre.xml
     
         Returns:
-            pandas.DataFrame: Enriched DataFrame of facts with columns for:
-                - Financial value tags, context, and matched periods
-                - Time-based labels (Q, YTD, FY)
-                - Axis assignments (segment, product, geo, etc.)
-                - Presentation roles and categorization logic
+            pandas.DataFrame: Enriched DataFrame of facts with additional fields:
+                - tag, value, contextref
+                - matched_category (e.g., current_q, prior_full_year, etc.)
+                - date_type (e.g., Q, YTD, FY)
+                - start, end, or instant date
+                - presentation_role
+                - axis_* fields: segment, product, geo, etc.
+                - axis_unassigned: unclassified dimensional tags
     
         Notes:
-            - Requires global access to prior 10-Ks and 10-Qs (results_10k, results_10q).
-            - Automatically detects fiscal year boundaries based on historical filings.
-            - Designed to support structured financial modeling and matching logic.
+            - Relies on external globals `results_10q` and `results_10k` for prior filing dates.
+            - Includes fallbacks if certain filings or period matches are missing.
+            - Automatically skips and warns on pre-2019 filings (inline XBRL not reliable).
     
         Example:
             df = enrich_filing(filing)
@@ -492,7 +499,7 @@ def run_edgar_pipeline(
         return df
     
     
-    # In[ ]:
+    # In[64]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -502,29 +509,29 @@ def run_edgar_pipeline(
     def fetch_recent_10q_10k_accessions(cik, headers):
     
         """
-        Retrieves recent 10-Q and 10-K filings for a specified company from the SEC's EDGAR JSON submissions API.
+        Fetches recent 10-Q and 10-K filings for a given company from the SEC EDGAR submissions JSON API.
     
-        This function accesses the SEC’s real-time company submissions feed, parses recent filings,
-        and extracts metadata for Form 10-Q and 10-K filings. It returns two lists containing
-        the accession number, report date, and form type for each matching filing.
+        This function retrieves the company's real-time submission feed, filters for 10-Q and 10-K form types,
+        and returns two lists of filing metadata, including accession numbers and report dates.
     
-        Note: This method only returns filings that are currently available in the SEC JSON feed,
-        which may be limited to the most recent 250–1000 filings depending on company activity.
-    
-        Parameters:
-            cik (str): The 10-digit Central Index Key (CIK) of the company. Leading zeros will be padded if missing.
-            headers (dict): HTTP headers for the request, including a required 'User-Agent' field per SEC policy.
+        Args:
+            cik (str): The Central Index Key (CIK) of the company. Can be zero-padded or unpadded.
+            headers (dict): HTTP headers for the request. Must include a valid 'User-Agent' per SEC guidelines.
     
         Returns:
-            tuple: Two lists:
-                - accessions_10q (list of dict): Each dict contains 'accession', 'report_date', and 'form' for a 10-Q.
-                - accessions_10k (list of dict): Each dict contains 'accession', 'report_date', and 'form' for a 10-K.
+            tuple of (list, list):
+                - accessions_10q: List of dicts for each 10-Q filing, with keys:
+                    - 'accession': Accession number (e.g., "0001193125-23-123456")
+                    - 'report_date': Report period end date (YYYY-MM-DD)
+                    - 'form': Filing form ("10-Q")
+                - accessions_10k: Same structure for 10-K filings.
     
-        Example call:
-            fetch_recent_10q_10k_accessions("0000320193", headers)
+        Notes:
+            - The SEC submissions feed typically returns the most recent 250–1000 filings.
+            - This function assumes standard JSON field structure from EDGAR and will raise an error if structure is missing.
     
-        Example output:
-            {'accession': '0001193125-23-123456', 'report_date': '2023-10-31', 'form': '10-Q'}
+        Example:
+            accessions_10q, accessions_10k = fetch_recent_10q_10k_accessions("0000320193", headers)
         """
         
         url = f"https://data.sec.gov/submissions/CIK{cik.zfill(10)}.json"
@@ -565,17 +572,27 @@ def run_edgar_pipeline(
         return accessions_10q, accessions_10k
     
     def filter_filings_by_year(accessions, max_year, n_limit):
+        
         """
-        Filters filings to only include those with report_date ≤ max_year and returns up to n_limit entries.
-        
-        Parameters:
-            accessions (list of dict): Filings with keys including 'report_date'.
-            max_year (int): Latest year to include.
-            n_limit (int): Max number of entries to return.
-        
+        Filters a list of filing accessions to include only those with a report_date in or before a specified year.
+        Returns up to a maximum number of valid entries.
+    
+        Args:
+            accessions (list of dict): List of filing entries, each containing a 'report_date' field in "YYYY-MM-DD" format.
+            max_year (int): Latest acceptable year (inclusive).
+            n_limit (int): Maximum number of entries to return after filtering.
+    
         Returns:
-            list of dict: Filtered filings.
+            list of dict: Filtered list of filings matching the year condition, capped at n_limit.
+    
+        Notes:
+            - Ignores filings with missing or invalid report dates.
+            - Stops early once n_limit valid entries are found.
+    
+        Example:
+            accessions_10q = filter_filings_by_year(accessions_10q, max_year=2023, n_limit=12)
         """
+        
         filtered = []
         for entry in accessions:
             date_str = entry.get("report_date", "")
@@ -611,7 +628,7 @@ def run_edgar_pipeline(
         log_metric("fallback_triggered", False)
     
     
-    # In[ ]:
+    # In[65]:
     
     
     # === FETCH & PARSE RECENT FILINGS ===================================
@@ -622,33 +639,39 @@ def run_edgar_pipeline(
     def label_10q_accessions(accessions_10q, accessions_10k):
         
     # === Labels 10-Q accessions from EDGAR with fiscal-end dates and assign quarters ===
+        
         """
-        Assigns fiscal year-end, quarter, and label metadata to a list of 10-Q accessions 
-        using the company's known 10-K fiscal year-end dates.
+        Labels a list of 10-Q filings with fiscal year-end, quarter number, and standardized short labels (e.g. "2Q24")
+        based on the company’s historical 10-K fiscal year-end dates.
     
-        This function matches each 10-Q's 'report_date' (document period end) to the closest 
-        fiscal year-end from available 10-Ks. It then calculates the quarter number (Q1, Q2, Q3) 
-        based on the number of days between the report date and fiscal year-end. Finally, it assigns:
-          - 'fiscal_year_end' (YYYY-MM-DD)
-          - 'quarter' (e.g., "Q2")
-          - 'label' (e.g., "2Q24")
-          - 'year' (based on the 10-Q's report date)
-    
-        This metadata is used to pre-classify filings before downloading or parsing their contents,
-        enabling faster and more selective downstream processing.
+        This function matches each 10-Q's report date to the closest fiscal year-end (from 10-Ks),
+        calculates the time delta, and assigns:
+            - 'fiscal_year_end' (datetime.date): Matched 10-K fiscal year end
+            - 'quarter' (str): "Q1", "Q2", or "Q3"
+            - 'label' (str): Shorthand like "1Q25" based on fiscal year
+            - 'calendar_year' (int): Year of the 10-Q report date
+            - Optional: 'non_standard_period' (True if delta does not match standard quarter logic)
     
         Args:
-            accessions_10q (list of dict): List of 10-Q filings, each with a 'report_date'.
-            accessions_10k (list of dict): List of 10-K filings, each with a 'report_date'.
+            accessions_10q (list of dict): 10-Q accessions, each with a 'report_date' (YYYY-MM-DD).
+            accessions_10k (list of dict): 10-K accessions used to determine fiscal year boundaries.
     
         Returns:
-            list of dict: Enriched list of 10-Q filings with 'fiscal_year_end', 'quarter', 'label', and 'year'.
+            list of dict: Updated 10-Q accessions with new keys:
+                'fiscal_year_end', 'quarter', 'label', 'calendar_year', and optionally 'non_standard_period'.
+    
+        Notes:
+            - Fallback logic is used if a 10-Q date falls after the last known fiscal year-end.
+            - Quarter mapping is based on the number of days between report date and matched fiscal year-end:
+                • Q1 = ~270 days before FY end
+                • Q2 = ~180 days before FY end
+                • Q3 = ~90 days before FY end
+            - This step is critical for pre-tagging and organizing 10-Qs before processing.
     
         Example:
-            label_10q_accessions(accessions_10q, accessions_10k)
-            >> accessions_10q[0]['label'] → "3Q24"
-            >> accessions_10q[0]['fiscal_year_end'] → "2024-12-31"
-        """  
+            accessions_10q = label_10q_accessions(accessions_10q, accessions_10k)
+            print(accessions_10q[0]["label"])  # → "2Q24"
+        """
     
         # === Extract and sort valid fiscal year-end dates from 10-Ks ===
         fiscal_year_ends = []
@@ -724,30 +747,54 @@ def run_edgar_pipeline(
         return accessions_10q
     
     # === LABEL 10Q ACCESSIONS ===
-    if not use_fallback:
-        accessions_10q = label_10q_accessions(accessions_10q, accessions_10k)
+    accessions_10q = label_10q_accessions(accessions_10q, accessions_10k)
+    
+    if not FOUR_Q_MODE:
+        # === Guard: Ensure labeled target quarter exists ===
+        target_label = f"{QUARTER}Q{str(YEAR)[-2:]}"  # e.g., 2Q24
+        
+        # === Filter results_10q based on target label
+        filtered_10qs = [q for q in accessions_10q if q.get("label") == target_label]
+        
+        if not filtered_10qs:
+           raise ValueError(f"❌ No 10-Q filing found for {target_label}. This quarter may not have been filed yet.")
     
     
-    # In[ ]:
+    # In[10]:
     
     
     # === FETCH & PARSE RECENT FILINGS ===================================
     # === Filter for required 10-Q's for workflow ===================================
     
     def filter_10q_accessions(accessions_10q, fiscal_year, quarter):
+        
         """
-        Filters 10-Q accessions based on fiscal year and quarter for quarterly workflows.
+        Filters 10-Q filings to include only those relevant for the target fiscal year and quarter.
     
-        This function uses the 'quarter' and 'fiscal_year_end' fields assigned during labeling,
-        and extracts the fiscal year from 'fiscal_year_end' for matching.
+        This function constructs a list of (quarter, fiscal_year) pairs needed for quarterly workflows,
+        including:
+            - The target quarter (e.g., Q2 2025)
+            - The prior quarter (e.g., Q1 2025)
+            - The same quarter in the prior year (e.g., Q2 2024)
+            - The prior quarter in the prior year (e.g., Q1 2024)
     
-        Parameters:
-            accessions_10q (list of dict): List of labeled 10-Q filings
-            fiscal_year (int): Target fiscal year (e.g., 2025)
-            quarter (int): Target fiscal quarter number (1–4)
+        For Q4 workflows, it includes Q3 and Q2 from both the current and prior fiscal years.
+    
+        Args:
+            accessions_10q (list of dict): List of labeled 10-Q filings, each with 'quarter' and 'fiscal_year_end'.
+            fiscal_year (int): Target fiscal year (e.g., 2025).
+            quarter (int): Target fiscal quarter (1–4).
     
         Returns:
-            list of dict: Filtered 10-Q filings needed for processing
+            list of dict: Filtered list of 10-Q accessions matching any of the (quarter, year) targets.
+    
+        Notes:
+            - Only includes Q1–Q3 filings (Q4 is handled differently in most workflows).
+            - Excludes filings with missing or malformed 'fiscal_year_end' or 'quarter'.
+            - Relies on accurate labeling by `label_10q_accessions`.
+    
+        Example:
+            required_10q = filter_10q_accessions(accessions_10q, fiscal_year=2025, quarter=2)
         """
     
         # === Build list of (quarter, fiscal_year) targets ===
@@ -796,7 +843,7 @@ def run_edgar_pipeline(
         required_10q_filings = filter_10q_accessions(accessions_10q, YEAR, QUARTER)
     
     
-    # In[ ]:
+    # In[12]:
     
     
     # === FETCH & PARSE RECENT FILINGS ===================================
@@ -807,26 +854,33 @@ def run_edgar_pipeline(
     # Gathers fiscal year end date from recent 10-K filings
         
         """
-        Enriches a list of 10-K accessions with fiscal metadata based on their report dates.
-        
-        For each 10-K, this function parses the 'report_date' (or 'document_period_end') to assign:
-          - 'year': The fiscal year (YYYY)
-          - 'fiscal_year_end': The formatted fiscal year-end date (e.g., 'December 31')
-        
-        This metadata enables accurate quarter matching and fiscal alignment without requiring
-        full .htm downloads or XBRL parsing.
-        
+        Enriches each 10-K filing in the list with fiscal year metadata based on its report date.
+    
+        For each 10-K filing, this function parses the 'report_date' (or 'document_period_end' if available)
+        and assigns:
+            - 'year': Fiscal year (YYYY), inferred directly from the date
+            - 'fiscal_year_end': Full fiscal year-end date as a datetime.date object
+    
+        This enrichment step allows for proper fiscal alignment and quarter labeling of related filings
+        without requiring .htm downloads or full XBRL parsing.
+    
         Args:
-            accessions_10k (list of dict): A list of 10-K filings, each containing at least 'report_date'
-                                           (from SEC JSON) or 'document_period_end' (from enriched filings).
-        
+            accessions_10k (list of dict): List of 10-K filings, each containing at least:
+                - 'report_date' (str): Period end date in YYYY-MM-DD format.
+    
         Returns:
-            list of dict: The enriched accessions list, with 'year' and 'fiscal_year_end' fields added.
-        
+            list of dict: Same list with added keys:
+                - 'year': Fiscal year as integer
+                - 'fiscal_year_end': datetime.date object for year-end
+    
+        Notes:
+            - If parsing fails, 'year' and 'fiscal_year_end' are set to None.
+            - Used upstream for quarter alignment and fiscal boundary inference.
+    
         Example:
-            enrich_10k_accessions_with_fiscal_year(accessions_10k)
-            >> accessions_10k[0]['fiscal_year_end'] → "December 31"
-            >> accessions_10k[0]['year'] → 2023
+            enriched_10k = enrich_10k_accessions_with_fiscal_year(accessions_10k)
+            print(enriched_10k[0]["year"])  # → 2023
+            print(enriched_10k[0]["fiscal_year_end"])  # → datetime.date(2023, 12, 31)
         """
     
         print("\n🛠 Enriching 10-Ks with fiscal year and fiscal year-end...")
@@ -847,34 +901,55 @@ def run_edgar_pipeline(
         return accessions_10k
     
     # === ENRICH 10K ACCESSIONS WITH FISCAL YEAR METADATA ===
-    if not use_fallback:
-        accessions_10k = enrich_10k_accessions_with_fiscal_year(accessions_10k)
+    
+    accessions_10k = enrich_10k_accessions_with_fiscal_year(accessions_10k)
+    
+    # === Guard: Ensure target 10-K year is present ===
+    
+    if FOUR_Q_MODE:
+        annual_label = f"FY{str(YEAR)[-2:]}"  # Example: "FY24"
+        print(f"\n🎯 Annual Label: {annual_label}")
+        
+    # Select current year 10-K
+        filtered_10ks = [k for k in accessions_10k if k.get("year") == YEAR]
+    
+        if not filtered_10ks:
+            raise ValueError(f"❌ No matching 10-K found for {YEAR}. It may not have been filed yet.")    
     
     
-    # In[ ]:
+    # In[13]:
     
     
     # === FETCH & PARSE RECENT FILINGS ===================================
     # === Filter for required 10-K filings ===================================
     
     def filter_10k_accessions(accessions_10k, fiscal_year, quarter):
+        
         """
-        Filters 10-K accessions for workflows that require full-year and YoY start-date rollforward.
+        Filters a list of 10-K filings to include only those needed for the target fiscal year and quarter.
     
-        For 4Q workflows, returns 10-Ks for:
-          - current fiscal year
-          - prior fiscal year
-          - prior-prior fiscal year
+        For Q4 workflows, includes 10-Ks for:
+            - the current fiscal year
+            - the prior fiscal year
+            - the prior-prior fiscal year
     
-        For Q1–Q3, returns an empty list (10-Ks not used).
+        For Q1–Q3 workflows, includes 10-Ks only for:
+            - the prior fiscal year
+            - the prior-prior fiscal year
     
-        Parameters:
-            accessions_10k (list of dict): List of 10-K filings with 'fiscal_year_end' (e.g. "2025-01-26")
-            fiscal_year (int): Target fiscal year (e.g., 2025)
-            quarter (int): Target fiscal quarter (1–4)
+        This ensures sufficient historical context for full-year rollforward, YoY comparisons, and fiscal 
+        year boundary resolution without pulling unnecessary filings.
+    
+        Args:
+            accessions_10k (list of dict): 10-K filings with a 'year' field assigned via enrichment.
+            fiscal_year (int): Target fiscal year (e.g., 2025).
+            quarter (int): Target fiscal quarter (1–4).
     
         Returns:
-            list of dict: Filtered 10-Ks needed for processing
+            list of dict: Filtered 10-K filings relevant to the current workflow.
+    
+        Example:
+            required_10k = filter_10k_accessions(accessions_10k, fiscal_year=2025, quarter=4)
         """
     
         if quarter == 4:
@@ -897,7 +972,7 @@ def run_edgar_pipeline(
         required_10k_filings = filter_10k_accessions(accessions_10k, YEAR, QUARTER)
     
     
-    # In[ ]:
+    # In[14]:
     
     
     # === FALLBACK: FETCH & PARSE FILINGS ===================================
@@ -917,26 +992,38 @@ def run_edgar_pipeline(
     def fetch_10q_10k_accessions_from_master (cik, headers, years=None, quarters=None):
         
         """
-        Retrieves metadata for 10-Q and 10-K filings for a specified company from the SEC EDGAR master index.
+        Retrieves 10-Q and 10-K filings for a given company by scanning the SEC EDGAR master index archive.
     
-        This function downloads and parses the quarterly master index files published by the SEC,
-        filters for the given CIK and filing types ("10-Q" and "10-K"), and returns two lists:
-        one for 10-Q filings and one for 10-K filings. Each entry includes the accession number,
-        report date, and form type.
+        This function downloads and parses master index files (`master.gz`) across the specified years and
+        quarters, filters for filings matching the provided CIK and form types ("10-Q", "10-K"), and returns
+        structured metadata for each matching filing.
     
-        Parameters:
-            cik (str): The SEC Central Index Key (CIK) of the company, as a string. Leading zeros are optional.
-            headers (dict): HTTP headers that must include a valid 'User-Agent' for SEC compliance.
-            years (list of int): The list of years to check (e.g., [2022, 2023]).
-            quarters (list of str): The list of quarters to check (e.g., ["QTR1", "QTR2"]).
+        Args:
+            cik (str): SEC Central Index Key for the company. Leading zeros are optional.
+            headers (dict): HTTP headers, must include 'User-Agent' as required by the SEC.
+            years (list of int): List of years to query (e.g., [2022, 2023]).
+            quarters (list of str): List of calendar quarters to query (e.g., ["QTR1", "QTR2"]).
     
         Returns:
-            tuple: Two lists:
-                - accessions_10q (list of dict): Each dict contains 'accession', 'report_date', and 'form' for a 10-Q.
-                - accessions_10k (list of dict): Each dict contains 'accession', 'report_date', and 'form' for a 10-K.
+            tuple of (list, list):
+                - accessions_10q: List of 10-Q filings, each with:
+                    - 'accession': Accession number (e.g., "0000320193-23-000055")
+                    - 'report_date': Filing date (used as report proxy)
+                    - 'form': Filing type ("10-Q")
+                - accessions_10k: Same structure for 10-K filings.
     
-        Example call:
-            fetch_10q_10k_accessions_from_master("0000320193", headers, years=[2023], quarters=["QTR1", "QTR2"])
+        Notes:
+            - Uses the filing date as 'report_date' to remain compatible with downstream workflows.
+            - Skips any malformed lines or non-matching forms/CIKs silently.
+            - May return a large number of filings if scanning across many years/quarters.
+    
+        Example:
+            accessions_10q, accessions_10k = fetch_10q_10k_accessions_from_master(
+                cik="0000320193",
+                headers=headers,
+                years=[2023],
+                quarters=["QTR1", "QTR2"]
+            )
         """
         
         cik_str = str(cik).lstrip("0") # normalize
@@ -1000,7 +1087,7 @@ def run_edgar_pipeline(
         print(accessions_10q[:2], accessions_10k[:1])
     
     
-    # In[ ]:
+    # In[15]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -1022,23 +1109,37 @@ def run_edgar_pipeline(
     def extract_facts_with_document_period(ixbrl_url, headers):
     
         """
-        Parses a single EDGAR inline XBRL (.htm) filing and extracts all tagged financial facts,
-        associated XBRL context blocks, and the filing's document period end date.
+        Downloads and parses a single inline XBRL (.htm) filing from EDGAR to extract structured
+        financial facts, context metadata, and the document period end date (DocumentPeriodEndDate).
+    
+        This function performs the following:
+            - Fetches and parses the iXBRL content from the provided SEC URL
+            - Extracts all <ix:nonfraction> and <ix:nonnumeric> tagged facts
+            - Identifies and stores all <xbrli:context> blocks for future dimensional mapping
+            - Captures and returns the DocumentPeriodEndDate (DEI tag) as the fiscal anchor
     
         Args:
-            ixbrl_url (str): Full URL to the .htm iXBRL filing on EDGAR.
-            headers (dict): HTTP headers to use in the request (User-Agent required by SEC).
+            ixbrl_url (str): Full URL to the iXBRL .htm filing (e.g., from SEC index.json).
+            headers (dict): HTTP headers to include in the request (must include 'User-Agent').
     
         Returns:
-            dict: A dictionary with the following keys:
-                - 'facts': List of extracted facts (each as dict with tag, contextref, value, text)
-                - 'context_blocks': Dict mapping contextRef IDs to raw XBRL context HTML
-                - 'document_period_end': Extracted DEI tag (str) for DocumentPeriodEndDate
-                - 'document_period_label': Raw label text of the DocumentPeriodEndDate (if available)
+            dict: A dictionary containing:
+                - 'facts': List of fact dictionaries with 'tag', 'contextref', 'value', and 'text'
+                - 'context_blocks': Dict of raw <xbrli:context> blocks keyed by contextRef ID
+                - 'document_period_end': DEI DocumentPeriodEndDate as a string (e.g., "2023-12-31")
+                - 'document_period_label': Human-readable version of the period end (if available)
+    
+        Notes:
+            - Applies sign reversal for facts tagged with `sign="-"` as per iXBRL convention
+            - Skips facts with missing tag name, contextref, or value
+            - Skips malformed numeric values that cannot be parsed
+            - Warns on unusually large filings or fact count (>800) for performance awareness
     
         Example:
-            extract_facts_with_document_period("https://www.sec.gov/Archives/...", headers)
+            data = extract_facts_with_document_period("https://www.sec.gov/Archives/...", headers)
+            print(data["document_period_end"])  # → "2023-06-30"
         """
+        
         print(f"\n🌐 Fetching iXBRL: {ixbrl_url}")
         t0 = time.time()
     
@@ -1115,33 +1216,35 @@ def run_edgar_pipeline(
     def try_all_htm_files(cik, accession_number, headers):
     
         """
-        Attempts to extract financial data from .htm files in a given EDGAR accession by scanning for 
-        the first valid inline XBRL (iXBRL) filing. Starts with the largest .htm file by size, then 
-        falls back to other .htm files if needed.
+        Attempts to extract structured financial data from all .htm files within a specific SEC EDGAR filing accession.
+    
+        This function prioritizes the largest .htm file (by byte size) under the assumption it is most likely to
+        contain the full iXBRL filing. If that file is invalid or incomplete, it falls back to scanning all other
+        .htm files in the accession folder until it finds one with a valid DocumentPeriodEndDate and ≥50 extracted facts.
     
         Args:
-            cik (str or int): Central Index Key (CIK) of the company.
+            cik (str or int): Central Index Key (CIK) for the company.
             accession_number (str): SEC accession number (e.g., "0000320193-23-000055").
-            headers (dict): HTTP headers for SEC requests (must include User-Agent).
+            headers (dict): HTTP headers for SEC API requests. Must include 'User-Agent'.
     
         Returns:
-            list of dict: A list containing one or more parsed iXBRL results, each with:
-                - 'file': Filename of the .htm file parsed
-                - 'url': Full URL to the .htm file
-                - 'document_period_end': DEI DocumentPeriodEndDate (str)
-                - 'document_period_label': Human-readable label of the period
-                - 'facts': List of extracted financial fact dictionaries
-                - 'context_blocks': Dict of raw XBRL context XML blocks
-                - 'concept_roles': Mapping of tags to presentation roles from .pre.xml
+            list of dict: A list (typically with one entry) of extracted data from a valid .htm file, each containing:
+                - 'file': Filename of the parsed .htm file
+                - 'url': Full SEC URL of the .htm
+                - 'document_period_end': DEI tag (e.g. "2023-06-30")
+                - 'document_period_label': Human-readable date label (if present)
+                - 'facts': List of extracted financial facts (tag, contextref, value, text)
+                - 'context_blocks': Raw XBRL context blocks used for dimensional labeling
+                - 'concept_roles': Mapping of tags to their presentation roles (from .pre.xml)
     
         Behavior:
-            - Prioritizes the largest .htm file by size, assuming it is the main filing.
-            - Requires at least 50 extracted XBRL facts to consider a file valid.
-            - Stops after the first valid file unless STOP_AFTER_FIRST_VALID_PERIOD is False.
-            - Falls back to other .htm files in the accession directory if the largest file is invalid.
+            - Automatically skips .htm files with <50 extracted facts (likely exhibits or junk files).
+            - Stops at the first valid .htm file unless STOP_AFTER_FIRST_VALID_PERIOD is False.
+            - Applies fallback logic if the largest file is invalid, attempting all remaining .htms.
     
         Example:
             results = try_all_htm_files("320193", "0000320193-23-000055", headers)
+            print(results[0]["document_period_end"])  # → "2023-12-31"
         """
     
         acc_nodash = accession_number.replace("-", "")
@@ -1241,29 +1344,38 @@ def run_edgar_pipeline(
     def extract_filing_batch(accessions, cik, headers, form_type):
     
         """
-        Processes a batch of 10-Q or 10-K filings and extracts financial data from each valid .htm file.
+        Extracts financial data from a batch of EDGAR 10-Q or 10-K filings using inline XBRL (.htm) files.
+    
+        For each filing in the accession list:
+          - Skips filings before 2019 (inline XBRL not guaranteed)
+          - Calls `try_all_htm_files()` to locate and parse the first valid .htm file
+          - Aggregates extracted data including facts, context blocks, and presentation roles
     
         Args:
-            accessions (list of dict): List of accessions with keys 'accession' and 'report_date'.
-            cik (str or int): Central Index Key for the company.
-            headers (dict): HTTP headers to use for SEC requests.
-            form_type (str): Filing type to label results (e.g., "10-Q" or "10-K").
+            accessions (list of dict): Filing metadata including 'accession' and 'report_date'.
+            cik (str or int): SEC Central Index Key for the company.
+            headers (dict): HTTP headers for SEC requests (must include 'User-Agent').
+            form_type (str): Filing type label, e.g. "10-Q" or "10-K".
     
         Returns:
-            list of dict: One result per valid filing, with keys:
-                - 'accession': Accession number
-                - 'report_date': Filing or report date
-                - 'file': .htm filename
-                - 'url': Full .htm URL
-                - 'document_period_end': DEI period end date
-                - 'document_period_label': Raw label for the period
-                - 'facts': Extracted financial facts
-                - 'context_blocks': XBRL contexts
-                - 'concept_roles': Extracted presentation role labels
-                - 'form': Filing form type
+            list of dict: One entry per successfully parsed filing, each containing:
+                - 'accession': Accession number (e.g., "0001193125-23-123456")
+                - 'report_date': Filing's report or submission date
+                - 'file': Name of the parsed .htm file
+                - 'url': Full SEC URL to the .htm file
+                - 'document_period_end': DEI period end date (as string)
+                - 'document_period_label': Human-readable label for the filing period
+                - 'facts': List of extracted financial fact dicts
+                - 'context_blocks': Raw XBRL context XML blocks
+                - 'concept_roles': Presentation roles from .pre.xml
+                - 'form': Filing type ("10-Q" or "10-K")
+    
+        Notes:
+            - Uses `try_all_htm_files()` for efficient, prioritized .htm scanning.
+            - Returns only filings that contain ≥50 iXBRL facts and a valid period end.
     
         Example:
-            extract_filing_batch(accessions_10q, "320193", headers, "10-Q")
+            results_10q = extract_filing_batch(required_10q_filings, "320193", headers, "10-Q")
         """
         
         results = []
@@ -1322,7 +1434,7 @@ def run_edgar_pipeline(
     log_metric("extraction_processing_seconds", round(end_total - start_total, 2))
     
     
-    # In[ ]:
+    # In[16]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -1402,7 +1514,7 @@ def run_edgar_pipeline(
         print(f"✅ {q['document_period_end']} → {q['label']} (matched FY end {q['fiscal_year_end']})")
     
     
-    # In[ ]:
+    # In[17]:
     
     
     # === FETCH & PARSE FILINGS ===================================
@@ -1425,7 +1537,7 @@ def run_edgar_pipeline(
             print(f"⚠️ Could not parse period end for accession {k['accession']}")
     
     
-    # In[ ]:
+    # In[18]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -1450,7 +1562,8 @@ def run_edgar_pipeline(
         
         if not filtered_10qs:
             target_10q = None
-            print(f"⚠️ No 10-Q filings found for {target_label}.")
+            raise ValueError(f"❌ No 10-Q filing found for {target_label}. This quarter may not have been filed yet.")
+            
         else:
             target_10q = filtered_10qs[0]
             for q in filtered_10qs:
@@ -1466,7 +1579,7 @@ def run_edgar_pipeline(
         })
     
     
-    # In[ ]:
+    # In[19]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1479,8 +1592,10 @@ def run_edgar_pipeline(
     if FOUR_Q_MODE:
     # Select current year 10-K
         filtered_10ks = [k for k in results_10k if k.get("year") == YEAR]
+        
         if not filtered_10ks:
-            raise ValueError(f"❌ No matching 10-K found for {YEAR}.")
+            raise ValueError(f"❌ No matching 10-K found for {YEAR}. It may not have been filed yet.")
+    
         target_10k = filtered_10ks[0]
         print(f"Selected 10-K for full year: Period-End: {target_10k['document_period_end']}")
         print(f"URL: {target_10k['url']}")
@@ -1522,15 +1637,19 @@ def run_edgar_pipeline(
     
         if not q3_entry:
             raise ValueError("❌ Missing current year Q3 10-Q — required for 4Q processing.")
-    
+        
         # Select prior year 10-K - this may be redundant - used in next step
         prior_10k = next((k for k in results_10k if k.get("year") == YEAR - 1), None)
         
-        if not prior_10k:
-            raise ValueError(f"❌ Missing prior year 10-K for {YEAR - 1} — required for prior 4Q calculation.")
+        if not prior_10k and not FULL_YEAR_MODE:
+            raise ValueError(f"❌ No matching 10-K found for {YEAR} — required for prior 4Q calculation.")
     
-        print(f"\n✅ Selected prior 10-K: Period-End: {prior_10k['document_period_end']}")
-        print(f"URL: {prior_10k['url']}")
+        elif not prior_10k and FULL_YEAR_MODE:
+            print(f"⚠️ Missing prior year 10-K for {YEAR - 1}, but continuing to process filing.")
+    
+        if prior_10k:
+            print(f"\n✅ Selected prior 10-K: Period-End: {prior_10k['document_period_end']}")
+            print(f"URL: {prior_10k['url']}")
             
         # === Log Target 10-K ===
         log_metric("target_filing", {
@@ -1548,7 +1667,7 @@ def run_edgar_pipeline(
         prior_10k = None
     
     
-    # In[ ]:
+    # In[20]:
     
     
     # === NORMAL 10-Q WORKFLOW and 4Q WORKFLOW =============================================
@@ -1637,7 +1756,7 @@ def run_edgar_pipeline(
             print("⚠️ Skipping prior Q1–Q3 10-Q check — not needed in full-year mode.")
     
     
-    # In[ ]:
+    # In[21]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1654,7 +1773,7 @@ def run_edgar_pipeline(
         negated_tags = get_negated_label_concepts(CIK, target_10q["accession"], HEADERS)
     
     
-    # In[ ]:
+    # In[22]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1685,7 +1804,7 @@ def run_edgar_pipeline(
     log_metric("concept_roles_extracted", len(df_concept_roles))
     
     
-    # In[ ]:
+    # In[23]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -1712,7 +1831,7 @@ def run_edgar_pipeline(
         log_metric("fact_category_counts", categorized_Q_fact_counts)
     
     
-    # In[ ]:
+    # In[24]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1744,9 +1863,12 @@ def run_edgar_pipeline(
             print(df_q3["matched_category"].value_counts(dropna=False))
     
         # Prior year
-        df_prior_10k = enrich_filing(prior_10k)
-        print("🔹 Prior Year 10-K facts enriched:")
-        print(df_prior_10k["matched_category"].value_counts(dropna=False))
+        if prior_10k:
+            df_prior_10k = enrich_filing(prior_10k)
+            print("🔹 Prior Year 10-K facts enriched:")
+            print(df_prior_10k["matched_category"].value_counts(dropna=False))
+        else:
+            df_prior_10k = pd.DataFrame() # allow df_prior_10k to be created to allow FY downstream workflow
     
         df_q1_prior = df_q2_prior = df_q3_prior = None
         if q1_prior_entry:
@@ -1770,7 +1892,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[ ]:
+    # In[25]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1789,7 +1911,7 @@ def run_edgar_pipeline(
     log_metric("negated_labels_extracted", len(df_negated_labels))
     
     
-    # In[ ]:
+    # In[26]:
     
     
     # === SHARED LOGIC (Enrichment summary) =============
@@ -1805,7 +1927,7 @@ def run_edgar_pipeline(
         
     
     
-    # In[ ]:
+    # In[27]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1819,7 +1941,7 @@ def run_edgar_pipeline(
             df_q3_prior[col] = df_q3_prior[col].fillna("__NONE__")
     
     
-    # In[ ]:
+    # In[28]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1852,7 +1974,7 @@ def run_edgar_pipeline(
     
     
     
-    # In[ ]:
+    # In[29]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1885,7 +2007,7 @@ def run_edgar_pipeline(
         log_metric("match_rate", {"ytd": match_rate_ytd})
     
     
-    # In[ ]:
+    # In[30]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -1947,7 +2069,7 @@ def run_edgar_pipeline(
             ]
     
     
-    # In[ ]:
+    # In[31]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2001,7 +2123,7 @@ def run_edgar_pipeline(
         print(f"✅ Final 4Q output standardized: {len(df_4q_output)} rows")
     
     
-    # In[ ]:
+    # In[32]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2023,7 +2145,7 @@ def run_edgar_pipeline(
         print(f"🔍 Unmatched YTD rows: {len(df_ytd_unmatched)}")
     
     
-    # In[ ]:
+    # In[33]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2083,7 +2205,7 @@ def run_edgar_pipeline(
         print(f"✅ Added {len(df_fuzzy_merged)} fuzzy-matched rows to df_merged.")
     
     
-    # In[ ]:
+    # In[34]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2105,7 +2227,7 @@ def run_edgar_pipeline(
         df_4q_output = standardize_zip_output(df_merged)
     
     
-    # In[ ]:
+    # In[35]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2146,7 +2268,7 @@ def run_edgar_pipeline(
         print(f"🔍 Borderline fuzzy matches (score 70–79): {len(df_borderline_audit)}")
     
     
-    # In[ ]:
+    # In[36]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2208,7 +2330,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[ ]:
+    # In[37]:
     
     
     # === FINALIZE 4Q COMBINED OUTPUT ==============================
@@ -2247,7 +2369,7 @@ def run_edgar_pipeline(
         log_metric("final_match_rate", match_rate_final_4q)
     
     
-    # In[ ]:
+    # In[38]:
     
     
     # === FULL YEAR WORKFLOW =============================================
@@ -2303,7 +2425,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[ ]:
+    # In[39]:
     
     
     # === FULL-YEAR WORKFLOW =======================================
@@ -2348,7 +2470,7 @@ def run_edgar_pipeline(
     # TODO: log match diagnostics here (after modularization) - log match rate of different match steps
     
     
-    # In[ ]:
+    # In[40]:
     
     
     # === 4Q WORKFLOW =============================================
@@ -2385,7 +2507,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in 4Q mode.")
     
     
-    # In[ ]:
+    # In[41]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2455,7 +2577,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[ ]:
+    # In[42]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2611,7 +2733,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[ ]:
+    # In[43]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2652,7 +2774,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[ ]:
+    # In[44]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2670,7 +2792,7 @@ def run_edgar_pipeline(
         pass
     
     
-    # In[ ]:
+    # In[45]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2730,7 +2852,7 @@ def run_edgar_pipeline(
         print(f"✅ Fallback match rate: {fallback_match_rate:.1%}")
     
     
-    # In[ ]:
+    # In[46]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2752,7 +2874,7 @@ def run_edgar_pipeline(
             print("✅ No collision flags in fallback output")
     
     
-    # In[ ]:
+    # In[47]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2785,7 +2907,7 @@ def run_edgar_pipeline(
             print("✅ No overlapping prior values found.")
     
     
-    # In[ ]:
+    # In[48]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2819,7 +2941,7 @@ def run_edgar_pipeline(
         print(f"🔍 Found {len(mismatches)} mismatched current values for overlapping prior values.")
     
     
-    # In[ ]:
+    # In[49]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2838,7 +2960,7 @@ def run_edgar_pipeline(
         print(f"✅ Result: {len(df_fallback_unique)} fallback matches added after removing {len(overlap_prior_values)} overlapping prior values.")
     
     
-    # In[ ]:
+    # In[50]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2870,7 +2992,7 @@ def run_edgar_pipeline(
     # TODO: log match diagnostics here (after modularization) - log match rate of different match steps
     
     
-    # In[ ]:
+    # In[51]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2901,7 +3023,7 @@ def run_edgar_pipeline(
         print("⚙️ Skipped: Not in quarterly mode.")
     
     
-    # In[ ]:
+    # In[52]:
     
     
     # === NORMAL 10-Q WORKFLOW ====================================
@@ -2939,7 +3061,7 @@ def run_edgar_pipeline(
         print(f"✅ New unmatched current_q/ytd disclosures: {unmatched_facts} out of {total_qytd_facts} ({unmatched_pct:.1%})")
     
     
-    # In[ ]:
+    # In[53]:
     
     
     # === SHARED: Collision Audit  ===
@@ -2968,7 +3090,7 @@ def run_edgar_pipeline(
     log_metric("collision_rate", collision_rate)
     
     
-    # In[ ]:
+    # In[54]:
     
     
     # === SHARED LOGIC (Apply Visual Logic and Export Dataframe) =============
@@ -2977,22 +3099,29 @@ def run_edgar_pipeline(
     # === Flip signs for negated tags in presentation filing
     
     def apply_visual_signs(df, negated_tags):
+        
         """
-        Applies visual sign-flipping to financial values for tags that are commonly reported as negative 
-        (e.g., expenses, losses) but are conceptually positive.
+        Applies visual sign flipping to financial values for tags that are conceptually positive
+        (e.g., expenses, losses) but reported as negative in XBRL.
+    
+        This function creates two new columns—`visual_current_value` and `visual_prior_value`—by reversing
+        the sign of values for tags that appear in the `negated_tags` set. This transformation is useful
+        for display, analysis, or charting where expenses should be shown as positive values.
     
         Args:
-            df (DataFrame): DataFrame containing "tag", "current_period_value", and "prior_period_value".
-            negated_tags (set or list): Collection of XBRL tags that should be visually flipped 
-                                        (e.g., ["us-gaap:OperatingExpenses", "us-gaap:InterestExpense"]).
+            df (pandas.DataFrame): DataFrame containing at least the following columns:
+                - 'tag': XBRL tag name (e.g., "us-gaap:OperatingExpenses")
+                - 'current_period_value': Numeric value for the current period
+                - 'prior_period_value': Numeric value for the prior period
+            negated_tags (set or list): Set of tags that should be visually flipped.
     
         Returns:
-            DataFrame: Same DataFrame with two new columns:
-                - 'visual_current_value': current value with visual sign flip applied if tag in negated_tags
-                - 'visual_prior_value': prior value with visual sign flip applied if tag in negated_tags
+            pandas.DataFrame: Same DataFrame with two new columns:
+                - 'visual_current_value': current_period_value (sign flipped if tag in negated_tags)
+                - 'visual_prior_value': prior_period_value (sign flipped if tag in negated_tags)
     
         Example:
-            apply_visual_signs(df, {"us-gaap:OperatingExpenses"})
+            df = apply_visual_signs(df, {"us-gaap:OperatingExpenses", "us-gaap:LossContingency"})
         """
         
         df["visual_current_value"] = df.apply(
@@ -3050,7 +3179,7 @@ def run_edgar_pipeline(
     export_df = export_df.drop_duplicates(subset=["current_period_value", "prior_period_value"])
     
     
-    # In[ ]:
+    # In[55]:
     
     
     # === FINAL EXPORTS TO MODEL ==================================
@@ -3185,7 +3314,8 @@ def run_edgar_pipeline(
                 print(f"  - Q3: {q3_entry['document_period_end']} | URL: {q3_entry['url']}")
         
             print("\n🔗 Prior Year 10-K Filing Reference:")
-            print(f"✅ Period End: {prior_10k['document_period_end']} | URL: {prior_10k['url']}")
+            if prior_10k:
+                print(f"✅ Period End: {prior_10k['document_period_end']} | URL: {prior_10k['url']}")
         
             print("\n🔗 Prior Year 10-Qs (Q1–Q3):")
             if q1_prior_entry:
@@ -3214,7 +3344,7 @@ def run_edgar_pipeline(
             print(f"✅ Period End: {target_10k['document_period_end']} | URL: {target_10k['url']}")
     
     
-    # In[ ]:
+    # In[56]:
     
     
     # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -3226,7 +3356,7 @@ def run_edgar_pipeline(
         print(f"🔍 Rows where both current and prior are missing: {(export_df['current_period_value'].isna() & export_df['prior_period_value'].isna()).sum()}")
     
     
-    # In[ ]:
+    # In[57]:
     
     
     from datetime import datetime
@@ -3252,7 +3382,7 @@ def run_edgar_pipeline(
     print(f"✅ Exported summary metrics to: {summary_path}")
     
     
-    # In[ ]:
+    # In[58]:
     
     
     print(f"\n📊 Final Metrics Dictionary:\n{json.dumps(metrics, indent=2)}")
@@ -3265,6 +3395,14 @@ def run_edgar_pipeline(
     
     
     # In[ ]:
+
+
+
+
+
+    
+    
+    
 
 
 

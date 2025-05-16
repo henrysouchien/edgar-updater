@@ -54,8 +54,9 @@ def get_user_key():
 limiter = Limiter(
     key_func=get_user_key,
     app=app,
-    default_limits=["1 per hour"],  # Default limit
-    storage_uri="memory://"  # Use in-memory storage for testing
+    default_limits=["2 per day"],  # Default limit (2 requests = 1 action)
+    storage_uri="memory://",  # Use in-memory storage for testing
+    default_limits_deduct_when=lambda response: response.status_code == 200  # Only count successful requests
 )
 
 # === Rate limit exceeded handler ===
@@ -65,13 +66,14 @@ def ratelimit_handler(e):
     if request.path.startswith("/run_pipeline"):
         user_key = request.args.get("key", "public")
         user_tier = TIER_MAP.get(user_key, "public")
-        message = (
-            "⚠️ Rate limit exceeded. "
-            "Please wait or register for a free account to unlock more usage." #message for public users    
-            if user_tier == "registered"
-                "Please wait before trying again. Or considering updating to more unlock more usage." #message for registered users
-            else "⚠️ Rate limit exceeded. Please try again later." #message for paid users
-        )
+        
+        if user_tier == "public":
+            message = "⚠️ Rate limit exceeded. Please wait or register for a free account to unlock more usage."
+        elif user_tier == "registered":
+            message = "⚠️ Rate limit exceeded. Please wait before trying again. Consider upgrading to unlock more usage."
+        else:
+            message = "⚠️ Rate limit exceeded. Please try again later."
+            
         return jsonify({"status": "error", "message": message}), 429
     
     # === Web UI rate limit handler ===
@@ -80,16 +82,16 @@ def ratelimit_handler(e):
     
     if user_tier == "public":
         output_text = (
-            "⚠️ You've reached the public demo limit. "
+            "⚠️ You've reached the daily free limit. "
             "Please wait a bit, or register for more free access here: https://your.kartra.page/register."
         )
     elif user_tier == "registered":
         output_text = (
-            "⚠️ You've reached your hourly limit. "
-            "Please wait a bit before trying again. Or consider upgrading to more usage here: https://your.kartra.page/register."
+            "⚠️ You've reached your dailylimit. "
+            "Please wait a bit before trying again. Consider upgrading to unlock more usage: https://your.kartra.page/register."
         )
     else:
-        output_text = "⚠️ Rate limit exceeded. Please try again later."
+        output_text = "⚠️ Daily rate limit exceeded. Please try again later."
     
     log_request(None, None, None, user_key, "web", "rate_limited", user_tier)
     return render_template(
@@ -164,23 +166,37 @@ def log_request(ticker, year, quarter, key, source, status="attempt", tier="publ
 # === File download route ===
 @app.route("/download/<filename>")
 def download_file(filename):
-    return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
+    try:
+        if not os.path.exists(EXPORT_DIR):
+            print(f"DEBUG >> Export directory not found: {EXPORT_DIR}")
+            return "Export directory not found", 404
+        if not os.path.exists(os.path.join(EXPORT_DIR, filename)):
+            print(f"DEBUG >> File not found: {filename} in {EXPORT_DIR}")
+            return "File not found", 404
+        return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
+    except Exception as e:
+        print(f"DEBUG >> Download error: {str(e)}")
+        return str(e), 500
 
 # === API endpoint ===
+@app.route("/run_pipeline", methods=["POST"])
 @limiter.limit(
     limit_value=lambda: {
-        "public": "1 per hour",
-        "registered": "2 per hour",
-        "paid": "100 per hour"
+        "public": "2 per day",     # 1 action per day
+        "registered": "4 per day",  # 2 actions per day
+        "paid": "200 per day"      # 100 actions per day
     }[TIER_MAP.get(request.args.get("key", "public"), "public")],
-    exempt_when=lambda: TIER_MAP.get(request.args.get("key", "public"), "public") == "paid"
+    deduct_when=lambda response: response.status_code == 200  # Only count successful runs
 )
-@app.route("/run_pipeline", methods=["POST"])
-
-# === Check API key and run pipeline ===
 def run_pipeline():
     user_key = request.args.get("key", PUBLIC_KEY)
     user_tier = TIER_MAP.get(user_key, "public")
+    
+    # Debug logging for rate limiting
+    print(f"\nDEBUG >> API Rate Limit Check:")
+    print(f"DEBUG >> - User Key: {user_key}")
+    print(f"DEBUG >> - User Tier: {user_tier}")
+    print(f"DEBUG >> - Is Exempt: {TIER_MAP.get(user_key, 'public') == 'paid'}\n")
 
     is_public = user_tier == "public"
     is_registered = user_tier == "registered"
@@ -205,7 +221,7 @@ def run_pipeline():
             "message": "⚠️ Another request is currently processing. Please try again shortly."
         }), 429
 
-    # === Process request ===
+    # === Process request === 
     try:
         data = request.json
         ticker = data['ticker'].upper()
@@ -300,14 +316,12 @@ def run_pipeline():
 @app.route("/", methods=["GET", "POST"])
 @limiter.limit(
     limit_value=lambda: {
-        "public": "1 per hour",
-        "registered": "2 per hour",
-        "paid": "100 per hour"
+        "public": "2 per day",     # 1 action per day
+        "registered": "4 per day",  # 2 actions per day
+        "paid": "200 per day"      # 100 actions per day
     }[TIER_MAP.get(request.args.get("key", "public"), "public")],
-    exempt_when=lambda: (
-        request.method == "GET" or  # Exempt GET requests
-        TIER_MAP.get(request.args.get("key", "public"), "public") == "paid"  # Exempt paid users
-    )
+    exempt_when=lambda: request.method == "GET",  # Only exempt GET requests
+    deduct_when=lambda response: response.status_code == 200  # Only count successful runs
 )
 def web_ui():
     # === Get user key and tier ===
@@ -376,11 +390,26 @@ def web_ui():
             # ✅ Check if file already exists & if so send to browser
             if os.path.exists(updated_excel_file) and os.path.exists(log_path):
                 log_request(ticker, year, quarter, user_key, "web", "cache_hit", user_tier)
-                success_message = f"✅ Updater macro file ready with data for {ticker} {quarter}Q{year}! This file was generated earlier and matched your request — prior output below."
+                success_message = f"✅ Updater macro file ready with data for {ticker} {quarter}Q{year}! It was generated earlier and matched your request — see prior output below."
 
                 # Get the summary log
                 with open(log_path, "r") as f:
-                    output_text = f.read()
+                    log_text = f.read()
+                    lines = log_text.splitlines()
+                    
+                    # Extract summary section
+                    start_index = None
+                    end_index = None
+                    for i, line in enumerate(lines):
+                        if "📄 Export summary:" in line and start_index is None:
+                            start_index = i
+                        if "⏱️ Total processing time" in line:
+                            end_index = i + 1
+                    
+                    if start_index is not None and end_index is not None:
+                        output_text = "\n".join(lines[start_index:end_index])
+                    else:
+                        output_text = log_text
 
                 return render_template(
                     "form.html",
@@ -482,9 +511,8 @@ def web_ui():
             log_path = log_error_json("WebUI", context, e, key=user_key, tier=user_tier)
             output_text = (
                 "❌ This filing could not be processed.\n\n"
-                f"Error details: {str(e)}\n"
-                f"A full error log was saved to: {log_path}\n"
-                "Please send an email to support@henrychien.com with the error message and we'll look into it."
+                f"Error details: {str(e)}\n\n"
+                "If this is incorrect, please send an email to support@henrychien.com with the full message above.\n"
             )
             
             return render_template(

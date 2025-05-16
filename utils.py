@@ -26,21 +26,29 @@ from config import (
 metrics = {}
 
 def log_metric(key, value):
+    
     """
-    Logs a named metric or dictionary of sub-metrics to the global metrics store.
+    Logs a named metric or sub-metric dictionary to the global `metrics` store for tracking runtime stats,
+    quality diagnostics, or workflow flags.
 
     Args:
-        key (str): Metric name to log (e.g. "match_rate").
-        value (float, int, or dict): Metric value or sub-metric dictionary to store.
+        key (str): Name of the metric (e.g., "match_rate", "fallback_triggered").
+        value (float, int, or dict): Metric value or dictionary of sub-metrics to log.
 
     Behavior:
-        - If value is a dict and an existing dict is already stored, updates it.
-        - Otherwise, overwrites the key with the given value.
+        - If `value` is a dictionary and the key already exists with a dict value, it merges (updates) keys.
+        - Otherwise, the key is overwritten with the new value.
+
+    Side Effects:
+        - Updates the global `metrics` dictionary in-place.
+        - Used for logging and debugging purposes across extraction, matching, fallback, etc.
 
     Example:
         log_metric("match_rate", {"fy": 0.94, "ytd": 0.88})
         log_metric("negated_labels", 30)
+        log_metric("fallback_triggered", True)
     """
+    
     global metrics
     if isinstance(value, dict) and isinstance(metrics.get(key), dict):
         metrics[key].update(value)
@@ -65,24 +73,36 @@ def extract_fiscal_year_end(facts):
 # === NEW Helper: Extract Dimensions from Context ===
 
 def extract_dimensions_from_context(context_html):
+    
     """
-    Parses a raw XBRL context block (as HTML string) and extracts all dimensional metadata,
-    including axis-member pairs and their XML locations.
+    Parses a raw XBRL <xbrli:context> block and extracts all dimensional metadata, including
+    axis-member (dimension-member) pairs and their associated XML structure.
+
+    This function wraps the input HTML fragment in a root element with required XBRL namespaces,
+    locates the <segment> section, and extracts all <xbrldi:explicitMember> entries. Each entry is 
+    returned as a structured dictionary useful for downstream axis tagging and analytics.
 
     Args:
-        context_html (str): Raw HTML/XML content of an <xbrli:context> block.
+        context_html (str): Raw XML/HTML string of a single <xbrli:context> block.
 
     Returns:
         list of dict: Each dictionary contains:
-            - 'dimension': Full dimension QName
-            - 'member': Full member QName
-            - 'axis_name': Shortened axis name (e.g. "Segment")
-            - 'member_name': Shortened member name (e.g. "SoftwareDivision")
-            - 'location': Raw XML string of the dimension tag
+            - 'dimension': Full QName of the dimension (e.g., "us-gaap:StatementBusinessSegmentsAxis")
+            - 'member': Full QName of the member (e.g., "us-gaap:PlatformDivisionMember")
+            - 'axis_name': Simplified axis identifier (e.g., "StatementBusinessSegmentsAxis")
+            - 'member_name': Simplified member identifier (e.g., "PlatformDivisionMember")
+            - 'location': Raw XML string of the <explicitMember> node
+
+    Notes:
+        - Gracefully handles missing <segment> blocks.
+        - Returns an empty list if no dimensions are found or parsing fails.
+        - Requires `lxml` for namespace-aware XML parsing.
 
     Example:
-        extract_dimensions_from_context(context_html) -> [{"dimension": "...", "member": "...", ...}]
+        dims = extract_dimensions_from_context(context_html)
+        dims[0]["axis_name"]  # → "ProductOrServiceAxis"
     """
+    
     dimensions = []
     try:
         # Inject required namespaces into root wrapper
@@ -176,19 +196,31 @@ FINAL_COLS = [
 import requests
 
 def lookup_cik_from_ticker(ticker):
+    
     """
-    Retrieves the SEC CIK (Central Index Key) for a given stock ticker symbol.
+    Looks up the SEC Central Index Key (CIK) for a given stock ticker using the SEC's public
+    company-to-CIK mapping.
+
+    This function fetches and parses the official JSON file hosted by the SEC, then searches
+    for a case-insensitive match to the given ticker symbol. If found, it returns the CIK
+    as a zero-padded 10-digit string suitable for EDGAR queries.
 
     Args:
-        ticker (str): Stock ticker symbol (e.g. "AAPL").
+        ticker (str): Stock ticker symbol (e.g., "AAPL", "MSFT").
 
     Returns:
-        str or None: 10-digit CIK as a zero-padded string if found, otherwise None.
+        str or None: 10-digit CIK string (e.g., "0000320193") if found, otherwise None.
 
     Notes:
-        - Uses the public SEC JSON mapping at https://www.sec.gov/files/company_tickers.json.
-        - Requires a valid User-Agent header.
+        - Requires the global constant `TICKER_CIK_URL` to be defined.
+        - Uses the global `HEADERS` dict for HTTP request (must include User-Agent).
+        - Returns None and logs an error if the SEC JSON structure is invalid or lookup fails.
+
+    Example:
+        cik = lookup_cik_from_ticker("AAPL")
+        print(cik)  # → "0000320193"
     """
+    
     try:
         r = requests.get(TICKER_CIK_URL, headers=HEADERS)
         r.raise_for_status()
@@ -221,17 +253,31 @@ def lookup_cik_from_ticker(ticker):
 # === CONFIG & SETUP ==========================================
 # === Helper: Zip match method to perfom sequential group matching of dataframes in order ===
 def zip_match_in_order(df_curr, df_prior, match_keys):
+    
     """
-    Performs sequential, row-aligned zip matching between current and prior DataFrames,
-    grouped by shared match_keys.
+    Performs row-wise, order-preserving zip matching between grouped current and prior period DataFrames.
+
+    This function groups both input DataFrames using the same set of match keys, then aligns records
+    group-by-group in sequence. For each group, it zips the rows (up to the length of the shorter group)
+    and returns a merged DataFrame with prefixed column names for comparison and modeling.
 
     Args:
-        df_curr (DataFrame): Current period DataFrame.
-        df_prior (DataFrame): Prior period DataFrame.
-        match_keys (list of str): Column names to group and align on.
+        df_curr (pandas.DataFrame): Current period data, grouped on match_keys.
+        df_prior (pandas.DataFrame): Prior period data, grouped on match_keys.
+        match_keys (list of str): Columns to group on for alignment (e.g., ["tag", "axis_segment"]).
 
     Returns:
-        DataFrame: Row-aligned merged DataFrame with prefixed columns (e.g. current_tag, prior_tag).
+        pandas.DataFrame: Combined and aligned DataFrame with prefixed columns:
+            - 'current_*': Columns from df_curr
+            - 'prior_*': Columns from df_prior
+
+    Notes:
+        - If a group is missing from df_prior, it is skipped entirely.
+        - Only matches rows in the same order within a group (assumes sorting or natural pairing).
+        - Used for value roll-forward and period-to-period comparison logic.
+
+    Example:
+        matched = zip_match_in_order(curr_df, prior_df, match_keys=["tag", "axis_geo"])
     """
 
     matched_rows = []
@@ -267,19 +313,35 @@ def zip_match_in_order(df_curr, df_prior, match_keys):
 from collections import defaultdict
 
 def audit_value_collisions(df):
+    
     """
-    Audits the matched DataFrame to detect value collisions, where the same value is used
-    in multiple non-unique pairings (e.g., one prior → many current or vice versa).
+    Audits a matched DataFrame for non-unique value collisions between current and prior period values.
+
+    This function identifies cases where a single prior value maps to multiple distinct current values,
+    or vice versa—indicating potential data duplication, drift, or incorrect matching. It returns a filtered
+    DataFrame of all flagged collision rows for review or exclusion.
 
     Args:
-        df (DataFrame): Matched DataFrame containing "prior_period_value" and "current_period_value".
+        df (pandas.DataFrame): DataFrame containing matched period values, with:
+            - 'prior_period_value'
+            - 'current_period_value'
 
     Returns:
-        DataFrame: Subset of rows flagged for collision (non-unique mappings).
+        pandas.DataFrame: Subset of rows where:
+            - A prior value is used in >1 unique current match
+            - A current value is used in >1 unique prior match
+
+    Notes:
+        - Only considers non-null numeric values.
+        - Sorts the result by ['tag', 'current_period_value', 'prior_period_value'] for clarity.
+        - Useful for validating matching logic and ensuring one-to-one alignment in time series data.
 
     Example:
         flagged = audit_value_collisions(matched_df)
+        if not flagged.empty:
+            print("⚠️ Review flagged rows for duplicate or overlapping matches.")
     """
+    
     prior_to_current = defaultdict(set)
     current_to_prior = defaultdict(set)
 
@@ -317,19 +379,34 @@ def audit_value_collisions(df):
 # === Adaptive Fallback Match Key Logic ===
 
 def run_adaptive_match_keys(curr_df, prior_df, match_keys, min_keys):
+    
     """
-    Iteratively drops weak match keys until a sufficient shared key overlap is found
-    between the current and prior DataFrames.
+    Iteratively reduces match keys to find the minimal set that yields sufficient shared group overlap
+    between current and prior DataFrames for zip-aligned matching.
+
+    This function evaluates the number of shared grouped keys between current and prior data and
+    progressively drops the last (least important) match key until:
+        - At least 5% of current keys overlap with prior keys, or
+        - The number of match keys reaches the minimum allowed.
 
     Args:
-        curr_df (DataFrame): Current period DataFrame.
-        prior_df (DataFrame): Prior period DataFrame.
-        match_keys (list of str): Initial list of match keys to test.
-        min_keys (list of str): Minimum required match keys to retain.
+        curr_df (pandas.DataFrame): Current period data to group and align.
+        prior_df (pandas.DataFrame): Prior period data to group and align.
+        match_keys (list of str): Initial list of match keys to try (e.g., ["tag", "axis_geo", "axis_segment"]).
+        min_keys (list of str): Minimum subset of match keys allowed before stopping.
 
     Returns:
-        list of str: Optimized list of match keys with sufficient shared overlap.
+        list of str: Final reduced list of match keys used for alignment.
+
+    Notes:
+        - Prints diagnostic info on overlap at each iteration.
+        - Designed to be used before zip-style matching to avoid over-constrained groupings.
+        - Matching quality improves if match_keys are ordered from most to least important.
+
+    Example:
+        best_keys = run_adaptive_match_keys(curr_df, prior_df, match_keys=["tag", "axis_geo", "axis_segment"], min_keys=["tag"])
     """
+    
     match_keys = match_keys.copy()
 
     while True:
@@ -353,19 +430,32 @@ def run_adaptive_match_keys(curr_df, prior_df, match_keys, min_keys):
 # === Zip Match Output Standardizer ===
 
 def standardize_zip_output(df):
+    
     """
-    Renames the matched columns using PREFIX_MAP as keys for matches
-    Ensures all FINAL_COLS are present (filled with None if missing).
-    Preserves extra columns and appends them after FINAL_COLS.
+    Standardizes the structure of a matched DataFrame by renaming columns, ensuring required output fields,
+    and reordering columns for consistency.
 
-    Standardizes column names in a matched DataFrame using PREFIX_MAP,
-    ensures all FINAL_COLS are present, and reorders columns accordingly.
+    This function:
+        - Renames columns using `PREFIX_MAP` (e.g., "current_tag" → "tag")
+        - Ensures all `FINAL_COLS` are present, filling with None if missing
+        - Preserves any extra columns and appends them after the standardized fields
+        - Returns a clean, export-ready DataFrame for downstream analysis or model input
 
     Args:
-        df (DataFrame): DataFrame with prefixed current/prior columns.
+        df (pandas.DataFrame): DataFrame containing zip-matched rows with current_*/prior_* column prefixes.
 
     Returns:
-        DataFrame: Cleaned and standardized DataFrame ready for export or analysis.
+        pandas.DataFrame: Standardized DataFrame with:
+            - All required `FINAL_COLS` in order
+            - Renamed columns using `PREFIX_MAP`
+            - Any extra columns preserved at the end
+
+    Notes:
+        - Relies on global constants: `PREFIX_MAP` and `FINAL_COLS`.
+        - Safe to use even if some columns are missing — missing fields will be added as empty.
+
+    Example:
+        df_standardized = standardize_zip_output(matched_df)
     """
     
     prefix_map = PREFIX_MAP
@@ -399,16 +489,26 @@ import datetime
 def parse_date(date_input):
 
     """
-    Safely parses a string or datetime object into a `datetime.date` object.
+    Safely parses a date string or datetime-like object into a `datetime.date` object.
+
+    This function handles ISO-style (YYYY-MM-DD), slash-separated (MM/DD/YYYY), and pre-parsed
+    `datetime.date` objects. It returns None for invalid or unrecognized inputs.
 
     Args:
-        date_input (str or datetime-like): Input date string or object.
+        date_input (str or datetime-like): Input date as a string or datetime object.
 
     Returns:
-        datetime.date or None: Parsed date if successful, otherwise None.
+        datetime.date or None: Parsed date object if successful; None if parsing fails.
+
+    Notes:
+        - Uses `dateutil.parser.parse()` as primary parser.
+        - Falls back to manual "%m/%d/%Y" parsing for common U.S. formats.
+        - Logs a warning if the input cannot be parsed.
 
     Example:
-        parse_date("2023-03-31") -> datetime.date(2023, 3, 31)
+        parse_date("2023-06-30")    → datetime.date(2023, 6, 30)
+        parse_date("06/30/2023")    → datetime.date(2023, 6, 30)
+        parse_date(datetime.date(2022, 12, 31))  → datetime.date(2022, 12, 31)
     """
     
     if isinstance(date_input, datetime.date):
