@@ -54,9 +54,15 @@ def get_user_key():
 limiter = Limiter(
     key_func=get_user_key,
     app=app,
-    default_limits=["2 per day"],  # Default limit (2 requests = 1 action)
-    storage_uri="memory://",  # Use in-memory storage for testing
-    default_limits_deduct_when=lambda response: response.status_code == 200  # Only count successful requests
+    default_limits=["60 per day"],  # Match public tier limit
+    storage_uri="redis://localhost:6379/0",  # Use Redis for persistent storage
+    default_limits_deduct_when=lambda response: response.status_code == 200,  # Only count successful requests
+    storage_options={
+        "socket_timeout": 5,
+        "socket_connect_timeout": 5,
+        "retry_on_timeout": True,
+        "health_check_interval": 30
+    }
 )
 
 # === Rate limit exceeded handler ===
@@ -182,9 +188,9 @@ def download_file(filename):
 @app.route("/run_pipeline", methods=["POST"])
 @limiter.limit(
     limit_value=lambda: {
-        "public": "2 per day",     # 1 action per day
-        "registered": "4 per day",  # 2 actions per day
-        "paid": "200 per day"      # 100 actions per day
+        "public": "60 per day",     # 30 actions per day
+        "registered": "120 per day",  # 60 actions per day
+        "paid": "500 per day"      # 250 actions per day
     }[TIER_MAP.get(request.args.get("key", "public"), "public")],
     deduct_when=lambda response: response.status_code == 200  # Only count successful runs
 )
@@ -316,9 +322,9 @@ def run_pipeline():
 @app.route("/", methods=["GET", "POST"])
 @limiter.limit(
     limit_value=lambda: {
-        "public": "2 per day",     # 1 action per day
-        "registered": "4 per day",  # 2 actions per day
-        "paid": "200 per day"      # 100 actions per day
+        "public": "60 per day",     # 30 actions per day
+        "registered": "120 per day",  # 60 actions per day
+        "paid": "500 per day"      # 250 actions per day
     }[TIER_MAP.get(request.args.get("key", "public"), "public")],
     exempt_when=lambda: request.method == "GET",  # Only exempt GET requests
     deduct_when=lambda response: response.status_code == 200  # Only count successful runs
