@@ -12,6 +12,8 @@ from flask_limiter.errors import RateLimitExceeded
 import threading
 import string
 import secrets
+import zipfile
+import tempfile
 
 
 # === Load valid tickers ===
@@ -169,6 +171,20 @@ def log_request(ticker, year, quarter, key, source, status="attempt", tier="publ
     with open("usage_logs/request_log.jsonl", "a") as f:
         f.write(json.dumps(record) + "\n")
 
+def create_zip_file(file_path):
+    """Create a ZIP file containing the given file."""
+    # Create a temporary file for the ZIP
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix='.zip')
+    zip_filename = temp_zip.name
+    temp_zip.close()
+    
+    # Create the ZIP file
+    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        # Add the file to the ZIP
+        zipf.write(file_path, os.path.basename(file_path))
+    
+    return zip_filename
+
 # === File download route ===
 @app.route("/download/<filename>")
 def download_file(filename):
@@ -176,10 +192,29 @@ def download_file(filename):
         if not os.path.exists(EXPORT_DIR):
             print(f"DEBUG >> Export directory not found: {EXPORT_DIR}")
             return "Export directory not found", 404
-        if not os.path.exists(os.path.join(EXPORT_DIR, filename)):
+            
+        file_path = os.path.join(EXPORT_DIR, filename)
+        if not os.path.exists(file_path):
             print(f"DEBUG >> File not found: {filename} in {EXPORT_DIR}")
             return "File not found", 404
-        return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
+            
+        # If it's an XLSM file, serve it as a ZIP
+        if filename.endswith('.xlsm'):
+            zip_path = create_zip_file(file_path)
+            try:
+                return send_from_directory(
+                    os.path.dirname(zip_path),
+                    os.path.basename(zip_path),
+                    as_attachment=True,
+                    download_name=filename.replace('.xlsm', '.zip')
+                )
+            finally:
+                # Clean up the temporary ZIP file
+                os.unlink(zip_path)
+        else:
+            # For non-XLSM files, serve as is
+            return send_from_directory(EXPORT_DIR, filename, as_attachment=True)
+            
     except Exception as e:
         print(f"DEBUG >> Download error: {str(e)}")
         return str(e), 500
