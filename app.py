@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask import Flask, request, jsonify, render_template, send_from_directory, redirect
 from edgar_pipeline import run_edgar_pipeline
 import io
 from contextlib import redirect_stdout
@@ -243,12 +243,12 @@ def run_pipeline():
         sheet_name = data.get('sheet_name', "Raw_data")
 
         # ✅ Build filename and check for existing output
-        excel_filename = f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file}"
+        excel_filename = f"{ticker}_FY{str(year)[-2:]}_{excel_file}" if full_year_mode else f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file}"
         updated_excel_file = os.path.join(EXPORT_DIR, excel_filename)
 
         # === Log directory and filename ===
         log_dir = "pipeline_logs"
-        log_filename = f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt"
+        log_filename = f"{ticker}_FY{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt" if full_year_mode else f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt"
         log_path = os.path.join(log_dir, log_filename)
 
         # === Check for cached output ===
@@ -281,7 +281,7 @@ def run_pipeline():
         log_dir = "pipeline_logs"
         os.makedirs(log_dir, exist_ok=True)
 
-        log_filename = f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt"
+        log_filename = f"{ticker}_FY{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt" if full_year_mode else f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt"
         log_path = os.path.join(log_dir, log_filename)
 
         with open(log_path, "w") as f:
@@ -385,12 +385,12 @@ def web_ui():
             sheet_name = request.form.get("sheet_name") or "Raw_data"
 
             # ✅ Build full Excel file path
-            excel_filename = f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file}"
+            excel_filename = f"{ticker}_FY{str(year)[-2:]}_{excel_file}" if full_year_mode else f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file}"
             updated_excel_file = os.path.join(EXPORT_DIR, excel_filename)
 
             # === Log directory and filename ===
             log_dir = "pipeline_logs"
-            log_filename = f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt"
+            log_filename = f"{ticker}_FY{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt" if full_year_mode else f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt"
             log_path = os.path.join(log_dir, log_filename)
 
             # ✅ Check if file already exists & if so send to browser
@@ -472,7 +472,7 @@ def web_ui():
                 log_dir = "pipeline_logs"
                 os.makedirs(log_dir, exist_ok=True)
 
-                log_filename = f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt"
+                log_filename = f"{ticker}_FY{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt" if full_year_mode else f"{ticker}_{quarter}Q{str(year)[-2:]}_{excel_file.replace('.xlsm', '')}_log.txt"
                 log_path = os.path.join(log_dir, log_filename)
 
                 with open(log_path, "w") as f:
@@ -580,6 +580,126 @@ def generate_key_from_kartra():
         "api_key": new_key
     }), 200
 
+@app.route("/trigger_pipeline", methods=["GET"])
+@limiter.limit(
+    limit_value=lambda: {
+        "public": "60 per day",     # 30 actions per day
+        "registered": "120 per day",  # 60 actions per day
+        "paid": "500 per day"      # 250 actions per day
+    }[TIER_MAP.get(request.args.get("key", "public"), "public")],
+    deduct_when=lambda response: response.status_code == 200  # Only count successful runs
+)
+def trigger_pipeline():
+    # === Get and validate parameters ===
+    user_key = request.args.get("key", PUBLIC_KEY)
+    user_tier = TIER_MAP.get(user_key, "public")
+    
+    # Validate key
+    if user_key not in VALID_KEYS:
+        log_request(None, None, None, user_key, "trigger", "denied", user_tier)
+        return jsonify({"status": "error", "message": "❌ Invalid API key. Please check your link."}), 401
+    
+    # Get and validate ticker
+    ticker = request.args.get("ticker", "").upper()
+    if not ticker or ticker not in VALID_TICKERS:
+        log_request(ticker, None, None, user_key, "trigger", "denied", user_tier)
+        return jsonify({"status": "error", "message": f"❌ Invalid or unsupported ticker: {ticker}"}), 400
+    
+    # Get and validate year/quarter
+    try:
+        year = int(request.args.get("year", ""))
+        quarter = int(request.args.get("quarter", ""))
+        if not (1 <= quarter <= 4):
+            raise ValueError("Quarter must be between 1 and 4")
+    except (ValueError, TypeError):
+        log_request(ticker, None, None, user_key, "trigger", "denied", user_tier)
+        return jsonify({"status": "error", "message": "❌ Invalid year or quarter format"}), 400
+    
+    # === Try to acquire lock ===
+    is_public = user_tier == "public"
+    is_registered = user_tier == "registered"
+    is_premium = user_tier == "paid"
+    
+    if is_public:
+        acquired = pipeline_lock.acquire(blocking=False)
+    elif is_registered:
+        acquired = pipeline_lock.acquire(timeout=20)
+    elif is_premium:
+        acquired = pipeline_lock.acquire(timeout=60)
+    
+    if not acquired:
+        log_request(None, None, None, user_key, "trigger", "locked", user_tier)
+        return jsonify({
+            "status": "error",
+            "message": "⚠️ Another request is currently processing. Please try again shortly."
+        }), 429
+    
+    try:
+        # === Set default parameters ===
+        excel_file = "Updater_EDGAR.xlsm"
+        sheet_name = "Raw_data"
+        full_year_mode = request.args.get("full_year_mode", "").lower() == "true"
+        debug_mode = False
+        
+        # === Build filenames ===
+        base_filename = f"{ticker}_FY{str(year)[-2:]}" if full_year_mode else f"{ticker}_{quarter}Q{str(year)[-2:]}"
+        xlsm_filename = f"{base_filename}_Updater_EDGAR.xlsm"
+        xlsx_filename = f"{base_filename}_Updater_EDGAR.xlsx"
+        updated_xlsm_file = os.path.join(EXPORT_DIR, xlsm_filename)
+        updated_xlsx_file = os.path.join(EXPORT_DIR, xlsx_filename)
+        
+        # === Check for cached output ===
+        if os.path.exists(updated_xlsx_file):
+            log_request(ticker, year, quarter, user_key, "trigger", "cache_hit", user_tier)
+            return redirect(f"/download/{xlsx_filename}")
+        
+        # === Run pipeline ===
+        output_buffer = io.StringIO()
+        with redirect_stdout(output_buffer):
+            run_edgar_pipeline(
+                ticker,
+                year,
+                quarter,
+                full_year_mode,
+                debug_mode,
+                excel_file,
+                sheet_name
+            )
+        
+        # === Log usage ===
+        log_usage(
+            ticker=ticker,
+            year=year,
+            quarter=quarter,
+            key=user_key,
+            tier=user_tier,
+            source="trigger",
+            status="success"
+        )
+        
+        # === Log request ===
+        log_request(ticker, year, quarter, user_key, "trigger", "success", user_tier)
+        
+        # === Redirect to download XLSX file ===
+        return redirect(f"/download/{xlsx_filename}")
+        
+    except Exception as e:
+        # === Log error ===
+        context = {
+            "ticker": ticker,
+            "year": year,
+            "quarter": quarter,
+            "full_year_mode": full_year_mode,
+            "debug_mode": debug_mode,
+            "excel_file": excel_file,
+            "sheet_name": sheet_name,
+        }
+        log_error_json("Trigger", context, e, key=user_key, tier=user_tier)
+        return jsonify({"status": "error", "message": str(e)}), 500
+        
+    finally:
+        # === Release lock ===
+        pipeline_lock.release()
 
 if __name__ == "__main__":
     app.run(port=5000)

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[59]:
+# In[92]:
 
 
 # === MODULE IMPORTS ===
@@ -40,7 +40,7 @@ from config import (
 )
 
 
-# In[60]:
+# In[93]:
 
 
 # === IMPORTS ===
@@ -58,7 +58,7 @@ import json
 from datetime import datetime
 
 
-# In[61]:
+# In[94]:
 
 
 # === Add inputs to metrics dictionary ===
@@ -72,16 +72,16 @@ metrics.update({
 })
 
 
-# In[62]:
+# In[95]:
 
 
 # === CONFIG & SETUP ==========================================
 
 # === TICKER & DATE CONFIG ===
 TICKER = "MSCI"
-YEAR = 2025
-QUARTER = 2
-FULL_YEAR_MODE = False
+YEAR = 2024
+QUARTER = 4
+FULL_YEAR_MODE = True
 DEBUG_MODE = True
 
 # === OR: Manually define CIK ===
@@ -135,7 +135,7 @@ print(f"✅ Using CIK for {TICKER}: {CIK}")
 # - Change CIK/YEAR/QUARTER above before rerunning
 
 
-# In[63]:
+# In[96]:
 
 
 # === FETCH & PARSE FILINGS ===================================
@@ -489,7 +489,7 @@ def enrich_filing(filing):
     return df
 
 
-# In[64]:
+# In[97]:
 
 
 # === FETCH & PARSE FILINGS ===================================
@@ -618,7 +618,7 @@ else:
     log_metric("fallback_triggered", False)
 
 
-# In[65]:
+# In[98]:
 
 
 # === FETCH & PARSE RECENT FILINGS ===================================
@@ -735,7 +735,7 @@ def label_10q_accessions(accessions_10q, accessions_10k):
         print(f"✅ {q['report_date']} → {q['label']} (matched FY end {q['fiscal_year_end']})")
         
     return accessions_10q
-
+    
 # === LABEL 10Q ACCESSIONS ===
 accessions_10q = label_10q_accessions(accessions_10q, accessions_10k)
 
@@ -750,7 +750,7 @@ if not FOUR_Q_MODE:
        raise ValueError(f"❌ No 10-Q filing found for {target_label}. This quarter may not have been filed yet.")
 
 
-# In[10]:
+# In[99]:
 
 
 # === FETCH & PARSE RECENT FILINGS ===================================
@@ -833,7 +833,7 @@ if not use_fallback:
     required_10q_filings = filter_10q_accessions(accessions_10q, YEAR, QUARTER)
 
 
-# In[12]:
+# In[100]:
 
 
 # === FETCH & PARSE RECENT FILINGS ===================================
@@ -907,7 +907,7 @@ if FOUR_Q_MODE:
         raise ValueError(f"❌ No matching 10-K found for {YEAR}. It may not have been filed yet.")    
 
 
-# In[13]:
+# In[101]:
 
 
 # === FETCH & PARSE RECENT FILINGS ===================================
@@ -962,7 +962,7 @@ if not use_fallback:
     required_10k_filings = filter_10k_accessions(accessions_10k, YEAR, QUARTER)
 
 
-# In[14]:
+# In[102]:
 
 
 # === FALLBACK: FETCH & PARSE FILINGS ===================================
@@ -1077,7 +1077,7 @@ if len(accessions_10q) < N_10Q or len(accessions_10k) < N_10K:
     print(accessions_10q[:2], accessions_10k[:1])
 
 
-# In[15]:
+# In[103]:
 
 
 # === FETCH & PARSE FILINGS ===================================
@@ -1424,7 +1424,7 @@ print(f"\n⏱️ Total extraction processing time: {end_total - start_total:.2f}
 log_metric("extraction_processing_seconds", round(end_total - start_total, 2))
 
 
-# In[16]:
+# In[104]:
 
 
 # === FETCH & PARSE FILINGS ===================================
@@ -1504,7 +1504,7 @@ for q in results_10q:
     print(f"✅ {q['document_period_end']} → {q['label']} (matched FY end {q['fiscal_year_end']})")
 
 
-# In[17]:
+# In[105]:
 
 
 # === FETCH & PARSE FILINGS ===================================
@@ -1527,7 +1527,7 @@ for k in results_10k:
         print(f"⚠️ Could not parse period end for accession {k['accession']}")
 
 
-# In[18]:
+# In[106]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -1569,7 +1569,7 @@ if not FOUR_Q_MODE and target_10q:
     })
 
 
-# In[19]:
+# In[107]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -1657,7 +1657,7 @@ else:
     prior_10k = None
 
 
-# In[20]:
+# In[108]:
 
 
 # === NORMAL 10-Q WORKFLOW and 4Q WORKFLOW =============================================
@@ -1746,7 +1746,7 @@ else:
         print("⚠️ Skipping prior Q1–Q3 10-Q check — not needed in full-year mode.")
 
 
-# In[21]:
+# In[109]:
 
 
 # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1763,7 +1763,7 @@ else:
     negated_tags = get_negated_label_concepts(CIK, target_10q["accession"], HEADERS)
 
 
-# In[22]:
+# In[110]:
 
 
 # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1794,7 +1794,7 @@ print(f"✅ Extracted {len(df_concept_roles)} concept→role entries from .pre.x
 log_metric("concept_roles_extracted", len(df_concept_roles))
 
 
-# In[23]:
+# In[111]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -1821,7 +1821,7 @@ if not FOUR_Q_MODE:
     log_metric("fact_category_counts", categorized_Q_fact_counts)
 
 
-# In[24]:
+# In[112]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -1882,7 +1882,7 @@ else:
     pass
 
 
-# In[25]:
+# In[113]:
 
 
 # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -1901,7 +1901,7 @@ print(f"✅ Found {len(df_negated_labels)} tags with negated labels in .pre.xml"
 log_metric("negated_labels_extracted", len(df_negated_labels))
 
 
-# In[26]:
+# In[114]:
 
 
 # === SHARED LOGIC (Enrichment summary) =============
@@ -1917,7 +1917,7 @@ else:
     
 
 
-# In[27]:
+# In[115]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -1931,7 +1931,7 @@ if FOUR_Q_MODE:
         df_q3_prior[col] = df_q3_prior[col].fillna("__NONE__")
 
 
-# In[28]:
+# In[116]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -1964,7 +1964,7 @@ if FOUR_Q_MODE:
 
 
 
-# In[29]:
+# In[117]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -1997,7 +1997,7 @@ if FOUR_Q_MODE:
     log_metric("match_rate", {"ytd": match_rate_ytd})
 
 
-# In[30]:
+# In[118]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -2059,7 +2059,7 @@ if FOUR_Q_MODE:
         ]
 
 
-# In[31]:
+# In[119]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -2113,7 +2113,7 @@ if FOUR_Q_MODE:
     print(f"✅ Final 4Q output standardized: {len(df_4q_output)} rows")
 
 
-# In[32]:
+# In[120]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -2135,7 +2135,7 @@ if FOUR_Q_MODE:
     print(f"🔍 Unmatched YTD rows: {len(df_ytd_unmatched)}")
 
 
-# In[33]:
+# In[121]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -2195,7 +2195,7 @@ if FOUR_Q_MODE:
     print(f"✅ Added {len(df_fuzzy_merged)} fuzzy-matched rows to df_merged.")
 
 
-# In[34]:
+# In[122]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -2217,7 +2217,7 @@ if FOUR_Q_MODE:
     df_4q_output = standardize_zip_output(df_merged)
 
 
-# In[35]:
+# In[123]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -2258,7 +2258,7 @@ if FOUR_Q_MODE:
     print(f"🔍 Borderline fuzzy matches (score 70–79): {len(df_borderline_audit)}")
 
 
-# In[36]:
+# In[124]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -2320,7 +2320,7 @@ else:
     print("⚙️ Skipped: Not in 4Q mode.")
 
 
-# In[37]:
+# In[125]:
 
 
 # === FINALIZE 4Q COMBINED OUTPUT ==============================
@@ -2359,7 +2359,7 @@ if FOUR_Q_MODE and not FULL_YEAR_MODE:
     log_metric("final_match_rate", match_rate_final_4q)
 
 
-# In[38]:
+# In[126]:
 
 
 # === FULL YEAR WORKFLOW =============================================
@@ -2415,7 +2415,7 @@ else:
     print("⚙️ Skipped: Not in 4Q mode.")
 
 
-# In[39]:
+# In[127]:
 
 
 # === FULL-YEAR WORKFLOW =======================================
@@ -2460,7 +2460,7 @@ else:
 # TODO: log match diagnostics here (after modularization) - log match rate of different match steps
 
 
-# In[40]:
+# In[128]:
 
 
 # === 4Q WORKFLOW =============================================
@@ -2497,7 +2497,7 @@ else:
     print("⚙️ Skipped: Not in 4Q mode.")
 
 
-# In[41]:
+# In[129]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2567,7 +2567,7 @@ else:
     pass
 
 
-# In[42]:
+# In[130]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2723,7 +2723,7 @@ else:
     pass
 
 
-# In[43]:
+# In[131]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2764,7 +2764,7 @@ else:
     pass
 
 
-# In[44]:
+# In[132]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2782,7 +2782,7 @@ else:
     pass
 
 
-# In[45]:
+# In[133]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2842,7 +2842,7 @@ if not FOUR_Q_MODE:
     print(f"✅ Fallback match rate: {fallback_match_rate:.1%}")
 
 
-# In[46]:
+# In[134]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2864,7 +2864,7 @@ if not FOUR_Q_MODE:
         print("✅ No collision flags in fallback output")
 
 
-# In[47]:
+# In[135]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2897,7 +2897,7 @@ if not FOUR_Q_MODE:
         print("✅ No overlapping prior values found.")
 
 
-# In[48]:
+# In[136]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2931,7 +2931,7 @@ if not FOUR_Q_MODE:
     print(f"🔍 Found {len(mismatches)} mismatched current values for overlapping prior values.")
 
 
-# In[49]:
+# In[137]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2950,7 +2950,7 @@ if not FOUR_Q_MODE:
     print(f"✅ Result: {len(df_fallback_unique)} fallback matches added after removing {len(overlap_prior_values)} overlapping prior values.")
 
 
-# In[50]:
+# In[138]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -2982,7 +2982,7 @@ if not FOUR_Q_MODE:
 # TODO: log match diagnostics here (after modularization) - log match rate of different match steps
 
 
-# In[51]:
+# In[139]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -3013,7 +3013,7 @@ else:
     print("⚙️ Skipped: Not in quarterly mode.")
 
 
-# In[52]:
+# In[140]:
 
 
 # === NORMAL 10-Q WORKFLOW ====================================
@@ -3051,7 +3051,7 @@ if not FOUR_Q_MODE:
     print(f"✅ New unmatched current_q/ytd disclosures: {unmatched_facts} out of {total_qytd_facts} ({unmatched_pct:.1%})")
 
 
-# In[53]:
+# In[141]:
 
 
 # === SHARED: Collision Audit  ===
@@ -3080,7 +3080,7 @@ print(f"📊 Collision rate: {collision_rate:.1%}")
 log_metric("collision_rate", collision_rate)
 
 
-# In[54]:
+# In[142]:
 
 
 # === SHARED LOGIC (Apply Visual Logic and Export Dataframe) =============
@@ -3169,7 +3169,7 @@ export_df = export_df.sort_values(by=["presentation_role", "tag"])
 export_df = export_df.drop_duplicates(subset=["current_period_value", "prior_period_value"])
 
 
-# In[55]:
+# In[143]:
 
 
 # === FINAL EXPORTS TO MODEL ==================================
@@ -3178,7 +3178,12 @@ export_df = export_df.drop_duplicates(subset=["current_period_value", "prior_per
 # === Set Export Folder and Filename
 
 os.makedirs(EXPORT_UPDATER_DIR, exist_ok=True)
-export_updater_filename = f"{TICKER}_{QUARTER}Q{str(YEAR)[-2:]}_{EXCEL_FILE}"
+
+if FULL_YEAR_MODE:
+    export_updater_filename = f"{TICKER}_FY{str(YEAR)[-2:]}_{EXCEL_FILE}"
+else:
+    export_updater_filename = f"{TICKER}_{QUARTER}Q{str(YEAR)[-2:]}_{EXCEL_FILE}"
+    
 export_updater_path = os.path.join(EXPORT_UPDATER_DIR, export_updater_filename)
 
 # === Load the Updater workbook
@@ -3251,7 +3256,12 @@ print(f"📁 Updater file also saved to: {updater_path}")
 
 # === Export summary
 
-print(f"\n📄 Export summary: {QUARTER}Q {YEAR} data from {TICKER} ({CIK}) successfully written to {EXCEL_FILE}")
+if FULL_YEAR_MODE:
+    period_label = f"FY {YEAR}"
+else:
+    period_label = f"{QUARTER}Q {YEAR}"
+
+print(f"\n📄 Export summary: {period_label} data from {TICKER} ({CIK}) successfully written to {EXCEL_FILE}")
 print(f"✅ Data written to sheet Raw_data starting from A2.")
 print(f"📊 Total rows: {len(export_df)}")
 
@@ -3334,7 +3344,7 @@ if FOUR_Q_MODE and FULL_YEAR_MODE:
         print(f"✅ Period End: {target_10k['document_period_end']} | URL: {target_10k['url']}")
 
 
-# In[56]:
+# In[144]:
 
 
 # === SHARED LOGIC (e.g. negated labels, exports) =============
@@ -3346,7 +3356,7 @@ if DEBUG_MODE:
     print(f"🔍 Rows where both current and prior are missing: {(export_df['current_period_value'].isna() & export_df['prior_period_value'].isna()).sum()}")
 
 
-# In[57]:
+# In[145]:
 
 
 from datetime import datetime
@@ -3362,6 +3372,7 @@ duration = (end - start).total_seconds()
 print(f"⏱️ Total processing time: {duration:.2f} seconds")
 log_metric("total_processing_seconds", duration)
 
+
 # === Export summary to JSON ===
 os.makedirs(OUTPUT_METRICS_DIR, exist_ok=True)
 summary_path = os.path.join(OUTPUT_METRICS_DIR, f"{TICKER}_{QUARTER}Q{str(YEAR)[-2:]}_summary_metrics.json")
@@ -3372,7 +3383,31 @@ with open(summary_path, "w") as f:
 print(f"✅ Exported summary metrics to: {summary_path}")
 
 
-# In[58]:
+# In[146]:
+
+
+# === Export .xlsx version (non-macro, values only)
+export_clean_filename = export_updater_filename.replace(".xlsm", ".xlsx")
+export_clean_path = os.path.join(EXPORT_UPDATER_DIR, export_clean_filename)
+
+# Create a brand new workbook
+wb_clean = openpyxl.Workbook()
+sheet_clean = wb_clean.active
+sheet_clean.title = "Raw_data"
+
+# Copy raw values from original sheet
+data_row_count = len(export_df)
+
+for row in sheet.iter_rows(min_row=1, max_row=data_row_count + 1, max_col=5):
+    for cell in row:
+        sheet_clean.cell(row=cell.row, column=cell.column, value=cell.value)
+
+# Save the clean .xlsx file
+wb_clean.save(export_clean_path)
+print(f"📁 Clean non-macro .xlsx file saved to: {export_clean_path}")
+
+
+# In[147]:
 
 
 print(f"\n📊 Final Metrics Dictionary:\n{json.dumps(metrics, indent=2)}")
