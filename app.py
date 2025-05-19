@@ -15,6 +15,7 @@ import secrets
 import zipfile
 import tempfile
 from functools import wraps
+import redis
 
 
 # === Load valid tickers ===
@@ -54,8 +55,18 @@ def get_user_key():
     return request.args.get("key", PUBLIC_KEY)
 
 # === Rate limiting ===
+def get_rate_limit_key():
+    user_key = request.args.get("key", PUBLIC_KEY)
+    user_tier = TIER_MAP.get(user_key, "public")
+    
+    # For public users, use IP address
+    if user_tier == "public":
+        return get_remote_address()
+    # For registered/paid users, use their key
+    return user_key
+
 limiter = Limiter(
-    key_func=get_user_key,
+    key_func=get_rate_limit_key,
     app=app,
     default_limits=None,  # Remove default limit
     storage_uri="redis://localhost:6379/0",  # Use Redis for persistent storage
@@ -245,12 +256,6 @@ def download_file(filename):
 def run_pipeline():
     user_key = request.args.get("key", PUBLIC_KEY)
     user_tier = TIER_MAP.get(user_key, "public")
-    
-    # Debug logging for rate limiting
-    print(f"\nDEBUG >> API Rate Limit Check:")
-    print(f"DEBUG >> - User Key: {user_key}")
-    print(f"DEBUG >> - User Tier: {user_tier}")
-    print(f"DEBUG >> - Is Exempt: {TIER_MAP.get(user_key, 'public') == 'paid'}\n")
 
     is_public = user_tier == "public"
     is_registered = user_tier == "registered"
@@ -899,8 +904,8 @@ def check_key_usage():
         }), 400
     
     try:
-        # Get the limiter's storage
-        storage = limiter.storage
+        # Get Redis connection
+        redis_client = redis.Redis(host='localhost', port=6379, db=0)
         
         # Get the key's tier
         tier = TIER_MAP.get(key_to_check, "public")
@@ -915,31 +920,67 @@ def check_key_usage():
         # Extract the number from the limit string (e.g., "60 per day" -> 60)
         limit_number = int(limit.split()[0])
         
-        # Check all routes for this key
-        web_ui_key = f"LIMITS:LIMITER/{key_to_check}/web_ui/{limit_number}/1/day"
-        api_key = f"LIMITS:LIMITER/{key_to_check}/run_pipeline/{limit_number}/1/day"
-        trigger_key = f"LIMITS:LIMITER/{key_to_check}/trigger_pipeline/{limit_number}/1/day"
-        
-        # Get usage from each route
-        web_ui_usage = int(storage.get(web_ui_key) or 0)
-        api_usage = int(storage.get(api_key) or 0)
-        trigger_usage = int(storage.get(trigger_key) or 0)
-        
-        # Total usage is sum of all routes
-        total_usage = web_ui_usage + api_usage + trigger_usage
-        
-        return jsonify({
-            "status": "success",
-            "key": key_to_check,
-            "tier": tier,
-            "limit": limit,
-            "current_usage": total_usage,
-            "breakdown": {
-                "web_ui": web_ui_usage,
-                "api": api_usage,
-                "trigger": trigger_usage
-            }
-        })
+        if tier == "public":
+            # For public tier, get all keys (both IP-based and public key)
+            patterns = [
+                f"LIMITS:LIMITER/*/web_ui/{limit_number}/1/day",
+                f"LIMITS:LIMITER/*/run_pipeline/{limit_number}/1/day",
+                f"LIMITS:LIMITER/*/trigger_pipeline/{limit_number}/1/day"
+            ]
+            
+            # Simple total usage counter and IP counts
+            total_usage = 0
+            ip_counts = {}
+            
+            for pattern in patterns:
+                keys = redis_client.keys(pattern)
+                for key in keys:
+                    key_str = key.decode('utf-8')
+                    parts = key_str.split('/')
+                    if len(parts) >= 4:
+                        identifier = parts[1]  # This is the IP or "public"
+                        usage = int(redis_client.get(key) or 0)
+                        if usage > 0:
+                            total_usage += usage
+                            if identifier not in ip_counts:
+                                ip_counts[identifier] = 0
+                            ip_counts[identifier] += usage
+            
+            return jsonify({
+                "status": "success",
+                "key": key_to_check,
+                "tier": tier,
+                "limit": limit,
+                "current_usage": total_usage,
+                "note": "Public tier is rate limited by IP address. This shows total usage across all IPs.",
+                "ip_counts": ip_counts
+            })
+        else:
+            # For registered/paid users, check their specific key
+            web_ui_key = f"LIMITS:LIMITER/{key_to_check}/web_ui/{limit_number}/1/day"
+            api_key = f"LIMITS:LIMITER/{key_to_check}/run_pipeline/{limit_number}/1/day"
+            trigger_key = f"LIMITS:LIMITER/{key_to_check}/trigger_pipeline/{limit_number}/1/day"
+            
+            # Get usage from each route
+            web_ui_usage = int(redis_client.get(web_ui_key) or 0)
+            api_usage = int(redis_client.get(api_key) or 0)
+            trigger_usage = int(redis_client.get(trigger_key) or 0)
+            
+            # Total usage is sum of all routes
+            total_usage = web_ui_usage + api_usage + trigger_usage
+            
+            return jsonify({
+                "status": "success",
+                "key": key_to_check,
+                "tier": tier,
+                "limit": limit,
+                "current_usage": total_usage,
+                "breakdown": {
+                    "web_ui": web_ui_usage,
+                    "api": api_usage,
+                    "trigger": trigger_usage
+                }
+            })
         
     except Exception as e:
         return jsonify({
