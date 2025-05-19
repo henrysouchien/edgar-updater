@@ -14,6 +14,7 @@ import string
 import secrets
 import zipfile
 import tempfile
+from functools import wraps
 
 
 # === Load valid tickers ===
@@ -56,7 +57,7 @@ def get_user_key():
 limiter = Limiter(
     key_func=get_user_key,
     app=app,
-    default_limits=["60 per day"],  # Match public tier limit
+    default_limits=None,  # Remove default limit
     storage_uri="redis://localhost:6379/0",  # Use Redis for persistent storage
     default_limits_deduct_when=lambda response: response.status_code == 200,  # Only count successful requests
     storage_options={
@@ -84,6 +85,20 @@ def ratelimit_handler(e):
             
         return jsonify({"status": "error", "message": message}), 429
     
+    # === Trigger pipeline rate limit handler ===
+    elif request.path.startswith("/trigger_pipeline"):
+        user_key = request.args.get("key", PUBLIC_KEY)
+        user_tier = TIER_MAP.get(user_key, "public")
+        
+        if user_tier == "public":
+            message = "⚠️ You've reached the daily free limit. Please wait a bit, or register for a free API key with more access here: https://your.kartra.page/register."
+        elif user_tier == "registered":
+            message = "⚠️ You've reached your free daily limit. Please wait a bit before trying again. Consider upgrading to unlock more usage: https://your.kartra.page/register."
+        else:
+            message = "⚠️ Daily rate limit exceeded. Please try again later."
+            
+        return jsonify({"status": "error", "message": message}), 429
+    
     # === Web UI rate limit handler ===
     user_key = request.args.get("key", PUBLIC_KEY)
     user_tier = TIER_MAP.get(user_key, "public")
@@ -91,11 +106,11 @@ def ratelimit_handler(e):
     if user_tier == "public":
         output_text = (
             "⚠️ You've reached the daily free limit. "
-            "Please wait a bit, or register for more free access here: https://your.kartra.page/register."
+            "Please wait a bit, or register for a free API key with more access here: https://your.kartra.page/register."
         )
     elif user_tier == "registered":
         output_text = (
-            "⚠️ You've reached your dailylimit. "
+            "⚠️ You've reached your free daily limit. "
             "Please wait a bit before trying again. Consider upgrading to unlock more usage: https://your.kartra.page/register."
         )
     else:
@@ -108,12 +123,6 @@ def ratelimit_handler(e):
         success_message="",
         excel_filename=None
     ), 429
-
-# Debug function to print limiter state
-def debug_limiter_state(user_key, user_tier):
-    print(f"DEBUG >> Rate Limit State:")
-    print(f"DEBUG >> - User Key: {user_key}")
-    print(f"DEBUG >> - User Tier: {user_tier}")
 
 # === Logging config ===
 LOG_DIR = "error_logs"
@@ -131,20 +140,23 @@ def log_error_json(source, context, exc, key=None, tier="public"):
         "error": str(exc),
         "traceback": traceback.format_exc()
     }
-    log_filename = f"{context.get('ticker', 'UNKNOWN')}_{context.get('quarter')}Q{context.get('year')}_error.json"
+    # Use full_year_mode from context
+    full_year_mode = context.get('full_year_mode', False)
+    log_filename = f"{context.get('ticker', 'UNKNOWN')}_{context.get('quarter')}Q{context.get('year')}_{'FY' if full_year_mode else 'Q'}_error.json"
     log_path = os.path.join(LOG_DIR, log_filename)
     with open(log_path, "w") as f:
         json.dump(error_info, f, indent=2)
     return log_path
 
 # === Usage logging ===
-def log_usage(ticker, year, quarter, key, source, status="success", tier="public"):
+def log_usage(ticker, year, quarter, key, source, status="success", tier="public", full_year_mode=False):
     usage_record = {
         "timestamp": datetime.now(UTC).isoformat(),
         "key": key,
         "ticker": ticker,
         "year": year,
         "quarter": quarter,
+        "full_year_mode": full_year_mode,
         "source": source,
         "status": status, # "attempt", "denied", "rate_limited", "locked", etc.
         "tier": tier
@@ -155,13 +167,14 @@ def log_usage(ticker, year, quarter, key, source, status="success", tier="public
         f.write(json.dumps(usage_record) + "\n")
 
 # === Request logging ===
-def log_request(ticker, year, quarter, key, source, status="attempt", tier="public"):
+def log_request(ticker, year, quarter, key, source, status="attempt", tier="public", full_year_mode=False):
     record = {
         "timestamp": datetime.now(UTC).isoformat(),
         "key": key,
         "ticker": ticker,
         "year": year,
         "quarter": quarter,
+        "full_year_mode": full_year_mode,
         "source": source,
         "status": status,  # "attempt", "denied", "rate_limited", "locked", etc.
         "tier": tier
@@ -330,7 +343,8 @@ def run_pipeline():
             key=user_key,
             tier=user_tier,
             source="api",
-            status="success"
+            status="success",
+            full_year_mode=full_year_mode
         )
 
         # === Log request ===       
@@ -386,17 +400,12 @@ def web_ui():
 
     # === Handle POST requests ===
     if request.method == "POST":
-        # Print debug info
-        print(f"DEBUG >> User key: {user_key}")
-        print(f"DEBUG >> User tier: {user_tier}")
-        debug_limiter_state(user_key, user_tier)
-
         # 🔒 Try to acquire lock first
-        if is_public:
+        if user_tier == "public":
             acquired = pipeline_lock.acquire(blocking=False)
-        elif is_registered:
+        elif user_tier == "registered":
             acquired = pipeline_lock.acquire(timeout=20)
-        elif is_premium:
+        elif user_tier == "paid":
             acquired = pipeline_lock.acquire(timeout=60)
         # === Handle lock acquisition ===
         if not acquired:
@@ -480,7 +489,8 @@ def web_ui():
                 key=user_key,
                 tier=user_tier,
                 source="web",
-                status="success"
+                status="success",
+                full_year_mode=full_year_mode
             )
 
             # === Get print outputs from the pipeline ===
@@ -709,7 +719,8 @@ def trigger_pipeline():
             key=user_key,
             tier=user_tier,
             source="trigger",
-            status="success"
+            status="success",
+            full_year_mode=full_year_mode
         )
         
         # === Log request ===
@@ -735,6 +746,206 @@ def trigger_pipeline():
     finally:
         # === Release lock ===
         pipeline_lock.release()
+
+# === Admin authentication ===
+def require_admin_token(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        token = request.args.get('token')
+        if not token or token != os.getenv('ADMIN_TOKEN'):
+            return jsonify({"status": "error", "message": "Unauthorized"}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+# === Admin routes ===
+@app.route("/admin/usage_summary")
+def usage_summary():
+    # Get admin key from URL
+    admin_key = request.args.get("key")
+    
+    # Check if it's a valid admin key
+    if not admin_key or admin_key != os.getenv('ADMIN_KEY'):
+        return jsonify({
+            "status": "error",
+            "message": "Unauthorized"
+        }), 401
+    
+    try:
+        # Load request logs
+        requests = []
+        with open("usage_logs/request_log.jsonl", "r") as f:
+            for line in f:
+                requests.append(json.loads(line.strip()))
+        
+        # Load usage logs
+        usage = []
+        with open("usage_logs/usage_log.jsonl", "r") as f:
+            for line in f:
+                usage.append(json.loads(line.strip()))
+        
+        # Load error logs
+        error_logs = {}
+        for filename in os.listdir("error_logs"):
+            if filename.endswith("_error.json"):
+                with open(os.path.join("error_logs", filename), "r") as f:
+                    error_data = json.load(f)
+                    # Use 4-digit year for consistency
+                    year = error_data.get('year')
+                    if isinstance(year, str) and len(year) == 2:
+                        year = "20" + year
+                    full_year = error_data.get('full_year_mode', False)
+                    key = f"{error_data.get('ticker', 'UNKNOWN')}_{error_data.get('quarter')}Q{year}_{'FY' if full_year else 'Q'}"
+                    error_logs[key] = error_data
+        
+        # Load summary metrics
+        metrics_logs = {}
+        metrics_dir = "metrics"
+        for filename in os.listdir(metrics_dir):
+            if filename.endswith("_summary_metrics.json"):
+                try:
+                    with open(os.path.join(metrics_dir, filename), "r") as f:
+                        metrics_data = json.load(f)
+                        # Extract ticker and quarter from filename (e.g., "AAPL_1Q24_summary_metrics.json")
+                        parts = filename.split("_")
+                        if len(parts) >= 3:
+                            ticker = parts[0]
+                            quarter = parts[1]
+                            # Convert 2-digit year to 4-digit year
+                            year = "20" + quarter[2:]  # Convert "Q24" to "2024"
+                            # Check if it's a full year file
+                            full_year = "FY" in filename
+                            key = f"{ticker}_{quarter[0]}Q{year}_{'FY' if full_year else 'Q'}"
+                            metrics_logs[key] = metrics_data
+                except Exception as e:
+                    print(f"Error loading metrics file {filename}: {str(e)}")
+        
+        # Combine the data using usage logs as primary index
+        combined_data = []
+        for usage_entry in usage:
+            # Create base entry with usage data
+            entry = {
+                "usage": usage_entry,
+                "error": None,
+                "metrics": None,
+                "related_requests": []  # Track all related requests
+            }
+            
+            # Match error logs
+            full_year = usage_entry.get('full_year_mode', False)
+            error_key = f"{usage_entry['ticker']}_{usage_entry['quarter']}Q{usage_entry['year']}_{'FY' if full_year else 'Q'}"
+            if error_key in error_logs:
+                entry["error"] = error_logs[error_key]
+            
+            # Match metrics logs
+            metrics_key = f"{usage_entry['ticker']}_{usage_entry['quarter']}Q{usage_entry['year']}_{'FY' if full_year else 'Q'}"
+            if metrics_key in metrics_logs:
+                entry["metrics"] = metrics_logs[metrics_key]
+            
+            # Find all related requests
+            for req in requests:
+                if (req.get("ticker") == usage_entry.get("ticker") and 
+                    req.get("year") == usage_entry.get("year") and 
+                    req.get("quarter") == usage_entry.get("quarter") and
+                    req.get("full_year_mode", False) == usage_entry.get("full_year_mode", False)):
+                    entry["related_requests"].append(req)
+            
+            combined_data.append(entry)
+        
+        # Sort by timestamp descending (most recent first)
+        combined_data.sort(key=lambda x: x["usage"].get("timestamp", ""), reverse=True)
+        
+        return jsonify({
+            "status": "success",
+            "data": combined_data,
+            "summary": {
+                "total_usage_entries": len(combined_data),
+                "total_requests": len(requests),
+                "successful_requests": len([x for x in requests if x.get("status") == "success"]),
+                "failed_requests": len([x for x in requests if x.get("status") == "error"]),
+                "rate_limited_requests": len([x for x in requests if x.get("status") == "rate_limited"]),
+                "cache_hits": len([x for x in requests if x.get("status") == "cache_hit"]),
+                "by_tier": {
+                    "public": len([x for x in requests if x.get("tier") == "public"]),
+                    "registered": len([x for x in requests if x.get("tier") == "registered"]),
+                    "paid": len([x for x in requests if x.get("tier") == "paid"])
+                }
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error aggregating logs: {str(e)}"
+        }), 500
+
+@app.route("/admin/check_key_usage")
+def check_key_usage():
+    # Get admin key from URL
+    admin_key = request.args.get("key")
+    
+    # Check if it's a valid admin key
+    if not admin_key or admin_key != os.getenv('ADMIN_KEY'):
+        return jsonify({
+            "status": "error",
+            "message": "Unauthorized"
+        }), 401
+    
+    # Get the key to check
+    key_to_check = request.args.get("check_key")
+    if not key_to_check:
+        return jsonify({
+            "status": "error",
+            "message": "No key provided to check"
+        }), 400
+    
+    try:
+        # Get the limiter's storage
+        storage = limiter.storage
+        
+        # Get the key's tier
+        tier = TIER_MAP.get(key_to_check, "public")
+        
+        # Get the limit for this tier
+        limit = {
+            "public": "60 per day",
+            "registered": "120 per day",
+            "paid": "500 per day"
+        }[tier]
+        
+        # Extract the number from the limit string (e.g., "60 per day" -> 60)
+        limit_number = int(limit.split()[0])
+        
+        # Check all routes for this key
+        web_ui_key = f"LIMITS:LIMITER/{key_to_check}/web_ui/{limit_number}/1/day"
+        api_key = f"LIMITS:LIMITER/{key_to_check}/run_pipeline/{limit_number}/1/day"
+        trigger_key = f"LIMITS:LIMITER/{key_to_check}/trigger_pipeline/{limit_number}/1/day"
+        
+        # Get usage from each route
+        web_ui_usage = int(storage.get(web_ui_key) or 0)
+        api_usage = int(storage.get(api_key) or 0)
+        trigger_usage = int(storage.get(trigger_key) or 0)
+        
+        # Total usage is sum of all routes
+        total_usage = web_ui_usage + api_usage + trigger_usage
+        
+        return jsonify({
+            "status": "success",
+            "key": key_to_check,
+            "tier": tier,
+            "limit": limit,
+            "current_usage": total_usage,
+            "breakdown": {
+                "web_ui": web_ui_usage,
+                "api": api_usage,
+                "trigger": trigger_usage
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": f"Error checking key usage: {str(e)}"
+        }), 500
 
 if __name__ == "__main__":
     app.run(port=5000)
