@@ -283,7 +283,7 @@ def run_pipeline():
     # === Process request === 
     try:
         data = request.json
-        ticker = data['ticker'].upper()
+        ticker = data['ticker'].strip().upper()
         if ticker not in VALID_TICKERS:
             log_request(ticker, None, None, user_key, "api", "denied", user_tier)
             return jsonify({"status": "error", "message": f"Sorry, '{ticker}' is not a supported stock. This updater only works for US-listed and US-based companies that file 10-K's and 10-Q's with the SEC."}), 400
@@ -309,7 +309,7 @@ def run_pipeline():
             log_request(ticker, year, quarter, user_key, "api", "cache_hit", user_tier)
             return jsonify({
                 "status": "success",
-                "message": f"✅ Updater file ready for {ticker} {quarter}Q{year}",
+                "message": f"✅ File ready for {ticker} {quarter}Q{year}",
                 "download_link": f"/download/{excel_filename}"
             }), 200
         
@@ -420,7 +420,7 @@ def web_ui():
 
         # === Process request ===
         try:
-            ticker = request.form.get("ticker").upper()
+            ticker = request.form.get("ticker", "").strip().upper()
             if ticker not in VALID_TICKERS:
                 log_request(ticker, None, None, user_key, "web", "denied", user_tier)
                 output_text = f"❌ Sorry, '{ticker}' is not a supported stock. This updater only works for US-listed and US-based companies that file 10-K's and 10-Q's with the SEC."
@@ -445,7 +445,7 @@ def web_ui():
             # ✅ Check if file already exists & if so send to browser
             if os.path.exists(updated_excel_file) and os.path.exists(log_path):
                 log_request(ticker, year, quarter, user_key, "web", "cache_hit", user_tier)
-                success_message = f"✅ Updater macro file ready with data for {ticker} {quarter}Q{year}! It was generated earlier and matched your request — see prior output below."
+                success_message = f"✅ Updater file ready for {ticker} {quarter}Q{year} - unzip before opening! This was generated earlier — see prior output below."
 
                 # Get the summary log
                 with open(log_path, "r") as f:
@@ -456,7 +456,7 @@ def web_ui():
                     start_index = None
                     end_index = None
                     for i, line in enumerate(lines):
-                        if "📄 Export summary:" in line and start_index is None:
+                        if "🔗 Target" in line and start_index is None:
                             start_index = i
                         if "⏱️ Total processing time" in line:
                             end_index = i + 1
@@ -507,7 +507,7 @@ def web_ui():
             end_index = None
 
             for i, line in enumerate(lines):
-                if "📄 Export summary:" in line and start_index is None:
+                if "🔗 Target" in line and start_index is None:
                     start_index = i
                 if "⏱️ Total processing time" in line:
                     end_index = i + 1
@@ -528,7 +528,7 @@ def web_ui():
                 with open(log_path, "w") as f:
                     f.write(summary_text)
   
-                success_message = f"✅ Updater macro file completed with data for {ticker} {quarter}Q{year}!"
+                success_message = f"✅ Excel updater file ready for {ticker} {quarter}Q{year} - unzip before opening!"
                 log_request(ticker, year, quarter, user_key, "web", "success", user_tier)
 
                 return render_template(
@@ -566,7 +566,7 @@ def web_ui():
             # === Log error & send message ===
             log_path = log_error_json("WebUI", context, e, key=user_key, tier=user_tier)
             output_text = (
-                "❌ This filing could not be processed.\n\n"
+                "This filing could not be processed.\n\n"
                 f"Error details: {str(e)}\n\n"
                 "If this is incorrect, please send an email to support@henrychien.com with the full message above.\n"
             )
@@ -650,7 +650,7 @@ def trigger_pipeline():
         return jsonify({"status": "error", "message": "❌ Invalid API key. Please check your link."}), 401
     
     # Get and validate ticker
-    ticker = request.args.get("ticker", "").upper()
+    ticker = request.args.get("ticker", "").strip().upper()
     if not ticker or ticker not in VALID_TICKERS:
         log_request(ticker, None, None, user_key, "trigger", "denied", user_tier)
         return jsonify({"status": "error", "message": f"❌ Invalid or unsupported ticker: {ticker}"}), 400
@@ -988,5 +988,5 @@ def check_key_usage():
             "message": f"Error checking key usage: {str(e)}"
         }), 500
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
     app.run(port=5000)
