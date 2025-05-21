@@ -2,6 +2,7 @@
 !*.py
 !*.xlsm
 !*.bas
+!templates/
 !templates/*.html
 !.gitignore
 !README.md
