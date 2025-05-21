@@ -92,6 +92,11 @@ Public Sub GetData()
     ' === Step 4: Import the data into the model ===
     Call Import_EDGAR_Data
     
+    With ThisWorkbook.Sheets("Raw_data") 'scroll updater view back to starting point for clean view
+        .Activate
+        .Range("G1").Select
+    End With
+    
     Exit Sub
     
 CancelHandler:
@@ -115,6 +120,17 @@ Private Sub SetupRanges()
     Set rngFullYearMode = wsModel.Range("H4")
     Set rngApiKey = wsModel.Range("G13")
     Set rngDownloadFolder = wsModel.Range("G15")
+    
+    ' === Clean download path at source ===
+    downloadFolder = Trim(rngDownloadFolder.Value)
+    downloadFolder = Replace(downloadFolder, Chr(160), "") ' remove non-breaking spaces
+    downloadFolder = Replace(downloadFolder, vbTab, "")    ' remove tabs
+
+    ' Add trailing slash if missing
+    If Right(downloadFolder, 1) <> "/" And Right(downloadFolder, 1) <> "\" Then
+        downloadFolder = downloadFolder & Application.PathSeparator
+    End If
+
     showDownloadMsg = (UCase(Trim(wsModel.Range("G17").Value)) = "TRUE")
 End Sub
 
@@ -129,7 +145,7 @@ fullYearRaw = LCase(Trim(rngFullYearMode.Text))
     Call SetupRanges
 
     If Trim(rngTicker.Value) = "" Then
-        MsgBox "Add ticker in cell H1", vbQuestion, "Missing Input"
+        MsgBox "Enter ticker in cell H1", vbQuestion, "Missing Input"
         CheckInputs = False
         Exit Function
     End If
@@ -140,8 +156,21 @@ fullYearRaw = LCase(Trim(rngFullYearMode.Text))
         Exit Function
     End If
 
+    If Len(Trim(rngYear.Value)) <> 4 Then
+        MsgBox "Fiscal year in cell H2 must be a 4-digit year, e.g. 2024", vbExclamation
+        CheckInputs = False
+        Exit Function
+    End If
+
+
     If Trim(rngQuarter.Value) = "" Or Not IsNumeric(rngQuarter.Value) Then
         MsgBox "Quarter in cell H3 must be a number 1Ð4", vbQuestion
+        CheckInputs = False
+        Exit Function
+    End If
+    
+    If CLng(rngQuarter.Value) < 1 Or CLng(rngQuarter.Value) > 4 Then
+        MsgBox "Quarter in cell H3 must be a number between 1 and 4", vbExclamation
         CheckInputs = False
         Exit Function
     End If
@@ -192,11 +221,6 @@ Private Sub Get_EDGAR_Data()
     End If
 
     apiKey = Trim(rngApiKey.Value)
-    downloadFolder = Trim(rngDownloadFolder.Value)
-
-    If Right(downloadFolder, 1) <> "/" And Right(downloadFolder, 1) <> "\" Then
-        downloadFolder = downloadFolder & Application.PathSeparator
-    End If
 
     url = "https://financialmodelupdater.com/trigger_pipeline?" & _
           "ticker=" & ticker & _
@@ -221,10 +245,7 @@ End Sub
 ' === Setup download path per configuration ===
 Private Sub SetupDownloadPath()
 
-    downloadFolder = Trim(rngDownloadFolder.Value)
-    If Right(downloadFolder, 1) <> "/" And Right(downloadFolder, 1) <> "\" Then
-        downloadFolder = downloadFolder & Application.PathSeparator
-    End If
+    Call SetupRanges
 
     Dim ticker As String, year As String, quarter As String, fullYearMode As String
     ticker = Trim(rngTicker.Value)
