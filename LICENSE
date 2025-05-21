@@ -2,5 +2,20 @@ Copyright (c) 2025 Henry Chien
 
 All rights reserved.
 
-This source code is proprietary and confidential.  
+This source code and all associated materials are the intellectual property of Henry Chien LLC.
 You may not copy, modify, distribute, or use this code in any way without written permission from the author.
+
+You are granted permission to:
+- Use, study, and modify this code for **personal, educational, or research purposes**
+- Share improvements or suggestions via pull requests or issues
+
+You may **not**:
+- Use this code in any **commercial product**, **enterprise system**, **SaaS offering**, or any context where it directly or indirectly generates revenue
+- Distribute modified or unmodified versions of this code outside of GitHub without written permission
+
+For collaboration, licensing, or commercial use inquiries, contact:
+hc@henrychien.com
+
+---
+
+This license is intentionally restrictive to protect product integrity and original authorship, while allowing transparency, learning, and contribution within the community.
