@@ -37,7 +37,7 @@ for label, value in key_map.items():
         VALID_KEYS.add(value)
         TIER_MAP[value] = "public"
     elif isinstance(value, dict):
-         # For structured entries like: "john": { "key": "...", "tier": "paid" }
+        # For structured entries like: "john": { "key": "...", "tier": "paid" }
         k = value.get("key")
         t = value.get("tier", "public") # fallback tier if missing
         if k:
