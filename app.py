@@ -588,47 +588,73 @@ def web_ui():
 # === Generate key from Kartra ===
 @app.route("/generate_key", methods=["POST"])
 def generate_key_from_kartra():
-    data = request.form or request.json
-    user_email = data.get("email", "").strip().lower()
-    tier = data.get("tier", "registered").strip().lower()  # now optional, defaults to "registered"
+    try:
+        payload = request.get_json(force=True)
 
-    if not user_email:
-        return jsonify({"status": "error", "message": "Missing email"}), 400
+        lead = payload.get("lead", {})
+        user_email = lead.get("email", "").strip().lower()
 
-    if tier not in ["registered", "paid"]:
-        return jsonify({"status": "error", "message": "Invalid tier"}), 400
+        if not user_email:
+            return jsonify({"status": "error", "message": "Missing email"}), 400
 
-    # Load current keys
-    with open("valid_keys.json", "r") as f:
-        key_map = json.load(f)
+        PAID_TAGS = {"Paid"}  # Replace with your real tag names
+        tier = "registered"  # default tier
 
-    if user_email in key_map:
+        # Tag-based tier detection
+        if payload.get("action") == "assign_tag":
+            tag_name = payload.get("action_details", {}).get("tag", {}).get("tag_name", "").strip()
+            if tag_name in PAID_TAGS:
+                tier = "paid"
+
+        # === Load existing keys
+        with open("valid_keys.json", "r") as f:
+            key_map = json.load(f)
+
+        if user_email in key_map:
+            # Always update the tier to reflect the most recent tag
+            key_map[user_email]["tier"] = tier
+
+            with open("valid_keys.json", "w") as f:
+                json.dump(key_map, f, indent=2)
+
+            return jsonify({
+                "status": "updated",
+                "email": user_email,
+                "tier": tier,
+                "api_key": key_map[user_email]["key"]
+            }), 200
+
+        # === Generate new key
+        alphabet = string.ascii_letters + string.digits
+        new_key = ''.join(secrets.choice(alphabet) for _ in range(16))
+
+        key_map[user_email] = {
+            "key": new_key,
+            "tier": tier
+        }
+
+        with open("valid_keys.json", "w") as f:
+            json.dump(key_map, f, indent=2)
+
+        # === Optional: audit log
+        with open("key_issuance_log.jsonl", "a") as f:
+            f.write(json.dumps({
+                "timestamp": datetime.now(UTC).isoformat(),
+                "email": user_email,
+                "api_key": new_key,
+                "tier": tier
+            }) + "\n")
+
         return jsonify({
-            "status": "error",
-            "message": f"A key already exists for {user_email}"
-        }), 409
+            "status": "success",
+            "email": user_email,
+            "tier": tier,
+            "api_key": new_key
+        }), 200
 
-    # Generate secure key
-    alphabet = string.ascii_letters + string.digits
-    new_key = ''.join(secrets.choice(alphabet) for _ in range(16))
-
-    # Save to file
-    key_map[user_email] = {
-        "key": new_key,
-        "tier": tier
-    }
-
-    # === Save to file ===
-    with open("valid_keys.json", "w") as f:
-        json.dump(key_map, f, indent=2)
-
-    # === Return JSON response ===
-    return jsonify({
-        "status": "success",
-        "email": user_email,
-        "tier": tier,
-        "api_key": new_key
-    }), 200
+    except Exception as e:
+        print("❌ Error processing Kartra webhook:", str(e))
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route("/trigger_pipeline", methods=["GET"])
 @limiter.limit(
