@@ -14,8 +14,8 @@ __pycache__/
 
 # Sensitive files
 app.py
-generate_api_key.py
 valid_keys.json
 .env
 *.pem
 edgar-updater-key.pem
+generate_api_key.py
