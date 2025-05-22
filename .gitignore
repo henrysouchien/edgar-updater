@@ -11,3 +11,10 @@
 __pycache__/
 .DS_Store
 ~$Updater_EDGAR.xlsm
+
+# Sensitive files
+app.py
+valid_keys.json
+.env
+*.pem
+edgar-updater-key.pem
