@@ -2,7 +2,7 @@
 
 import requests
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from collections import Counter, defaultdict
 from typing import Dict, List, Any
 import os
@@ -21,7 +21,7 @@ class AdminMonitor:
         """Make authenticated request to admin endpoint"""
         if params is None:
             params = {}
-        params['key'] = self.admin_key
+        params['key'] = self.admin_key  # Use key for admin auth
         
         response = requests.get(f"{self.base_url}{endpoint}", params=params)
         response.raise_for_status()
@@ -34,6 +34,25 @@ class AdminMonitor:
     def get_key_usage(self, check_key: str = 'public') -> Dict:
         """Get usage statistics for specific key type"""
         return self._make_request('/admin/check_key_usage', {'check_key': check_key})
+
+    def resolve_key_to_email(self, api_key: str) -> str:
+        """Resolve API key to email address"""
+        try:
+            # For resolve_key endpoint, we need to use token instead of key
+            response = requests.get(
+                f"{self.base_url}/admin/resolve_key",
+                params={
+                    'token': self.admin_key,  # Use token for admin auth
+                    'key': api_key  # The API key to resolve
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            if data.get('status') == 'success':
+                return data.get('email', 'Unknown')
+            return 'Unknown'
+        except Exception as e:
+            return 'Unknown'
 
     def format_timestamp(self, ts: str) -> str:
         """Format timestamp for display"""
@@ -63,19 +82,60 @@ class AdminMonitor:
         print(f"  • Paid: {by_tier.get('paid', 0):,}")
 
     def display_top_keys(self, data: Dict):
-        """Display top API keys by usage"""
+        """Display top API keys by usage (registered and paid) in the last 24 hours, with emails"""
         self.print_section_header("2. TOP KEYS (Last 24h)")
-        
-        # Process the combined data to get key usage
-        key_usage = Counter()
-        for entry in data.get('data', []):
-            key = entry.get('usage', {}).get('key')
-            if key and key != 'public':
-                key_usage[key] += 1
-        
-        # Display top 10 keys
-        for key, count in key_usage.most_common(10):
-            print(f"{key[:8]}... → {count:,} requests")
+
+        entries = data.get('data', [])
+        now = datetime.now(UTC)
+        registered_keys = Counter()
+        paid_keys = Counter()
+        key_to_time = {}
+
+        for entry in entries:
+            # Get all requests for this entry
+            requests = entry.get('related_requests', [])
+            
+            for req in requests:
+                key = req.get('key')
+                tier = req.get('tier')
+                timestamp = req.get('timestamp')
+                if not key or not tier or not timestamp:
+                    continue
+                try:
+                    # Parse timestamp and ensure it's in UTC
+                    ts = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    if now - ts > timedelta(hours=24):
+                        continue
+                    if tier == 'registered':
+                        registered_keys[key] += 1
+                    elif tier == 'paid':
+                        paid_keys[key] += 1
+                    key_to_time[key] = ts
+                except Exception as e:
+                    print(f"Error processing timestamp for key {key}: {e}")
+                    continue
+
+        # Display top registered keys
+        print("\nTop Registered Keys:")
+        if registered_keys:
+            for key, count in registered_keys.most_common(5):
+                email = self.resolve_key_to_email(key)
+                last_active = key_to_time.get(key)
+                last_active_str = last_active.strftime('%Y-%m-%d %H:%M') if last_active else 'N/A'
+                print(f"{key[:8]}... → {count:,} requests (Email: {email}, Last: {last_active_str})")
+        else:
+            print("No registered key activity found")
+
+        # Display top paid keys
+        print("\nTop Paid Keys:")
+        if paid_keys:
+            for key, count in paid_keys.most_common(5):
+                email = self.resolve_key_to_email(key)
+                last_active = key_to_time.get(key)
+                last_active_str = last_active.strftime('%Y-%m-%d %H:%M') if last_active else 'N/A'
+                print(f"{key[:8]}... → {count:,} requests (Email: {email}, Last: {last_active_str})")
+        else:
+            print("No paid key activity found")
 
     def display_public_ips(self, data: Dict):
         """Display public IPs with high usage"""
@@ -88,7 +148,7 @@ class AdminMonitor:
         sorted_ips = sorted(ip_counts.items(), key=lambda x: x[1], reverse=True)
         
         for ip, count in sorted_ips:
-            if count > 10:  # Only show IPs with more than 10 uses
+            if count > 10:  # Show IPs with more than 10 uses
                 print(f"{ip} → {count:,} requests")
 
     def display_errors(self, data: Dict):
@@ -128,7 +188,8 @@ class AdminMonitor:
             'rate_limited': 0,
             'last_active': None,
             'tickers': set(),
-            'errors': 0
+            'errors': 0,
+            'email': None
         })
         
         # Process all entries
@@ -179,6 +240,10 @@ class AdminMonitor:
             )
             
             if score > 5:  # Minimum threshold for consideration
+                # Resolve email for the key
+                email = self.resolve_key_to_email(key)
+                stats['email'] = email
+                
                 candidates.append({
                     'key': key,
                     'score': score,
@@ -196,6 +261,7 @@ class AdminMonitor:
         for candidate in candidates[:5]:  # Show top 5 candidates
             stats = candidate['stats']
             print(f"\n🔑 Key: {candidate['key'][:8]}...")
+            print(f"  • Email: {stats['email']}")
             print(f"  • Total Requests: {stats['total_requests']:,}")
             print(f"  • Successful Requests: {stats['successful_requests']:,}")
             print(f"  • Rate Limited: {stats['rate_limited']:,}")
