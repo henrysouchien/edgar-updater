@@ -19,3 +19,4 @@ valid_keys.json
 *.pem
 edgar-updater-key.pem
 generate_api_key.py
+monitor_usage.py
