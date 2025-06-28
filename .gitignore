@@ -6,6 +6,8 @@
 !templates/*.html
 !.gitignore
 !README.md
+!architecture.md
+!LICENSE
 !requirements.txt
 .ipynb_checkpoints/
 __pycache__/
