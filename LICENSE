@@ -1,21 +1,94 @@
-Copyright (c) 2025 Henry Chien
+EDGAR Financial Data Extractor - Custom License
+
+Copyright (c) 2025 Henry Chien (hx@henrychien.com)
 
 All rights reserved.
 
-This source code and all associated materials are the intellectual property of Henry Chien LLC.
-You may not copy, modify, distribute, or use this code in any way without written permission from the author.
+This software and associated documentation files (the "Software") are the 
+proprietary and confidential information of Henry Chien. The Software is 
+protected by copyright laws and international copyright treaties, as well as 
+other intellectual property laws and treaties.
 
-You are granted permission to:
-- Use, study, and modify this code for **personal, educational, or research purposes**
-- Share improvements or suggestions via pull requests or issues
+TERMS AND CONDITIONS:
 
-You may **not**:
-- Use this code in any **commercial product**, **enterprise system**, **SaaS offering**, or any context where it directly or indirectly generates revenue
-- Distribute modified or unmodified versions of this code outside of GitHub without written permission
+1. PERSONAL AND EDUCATIONAL USE ONLY
+   - This Software may be used for personal, non-commercial purposes only
+   - Educational use in academic institutions is permitted
+   - Research purposes in non-profit organizations are allowed
+   - Any commercial use is strictly prohibited without explicit written permission
 
-For collaboration, licensing, or commercial use inquiries, contact:
-hc@henrychien.com
+2. COMMERCIAL USE RESTRICTIONS
+   - Commercial use is expressly forbidden without prior written approval
+   - This includes but is not limited to:
+     * Use in for-profit businesses
+     * Integration into commercial software products
+     * Resale or redistribution for profit
+     * Use in consulting services
+     * Incorporation into commercial financial models or tools
+     * Use by financial institutions for client services
+
+3. APPROVAL REQUIREMENT
+   - Any use beyond personal/educational purposes requires explicit written approval
+   - Approval requests must be sent to: hx@henrychien.com
+   - Include detailed description of intended use case
+   - Approval is at the sole discretion of Henry Chien
+   - No implied or assumed approval exists
+
+4. REDISTRIBUTION RESTRICTIONS
+   - Redistribution of this Software is prohibited without written permission
+   - You may not distribute, sublicense, or transfer the Software to third parties
+   - No derivative works may be created without explicit permission
+
+5. ATTRIBUTION REQUIREMENTS
+   - If used with permission, proper attribution must be maintained
+   - Copyright notices must remain intact
+   - Credit must be given to Henry Chien as the original author
+
+6. DISCLAIMER OF WARRANTIES
+   - THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND
+   - NO WARRANTIES ARE MADE REGARDING ACCURACY, RELIABILITY, OR FITNESS FOR PURPOSE
+   - USE AT YOUR OWN RISK
+
+7. LIMITATION OF LIABILITY
+   - IN NO EVENT SHALL HENRY CHIEN BE LIABLE FOR ANY DAMAGES ARISING FROM USE
+   - THIS INCLUDES DIRECT, INDIRECT, INCIDENTAL, SPECIAL, OR CONSEQUENTIAL DAMAGES
+   - LIABILITY IS LIMITED TO THE MAXIMUM EXTENT PERMITTED BY LAW
+
+8. SEC COMPLIANCE
+   - Users must comply with all SEC EDGAR usage policies and rate limits
+   - Respect for SEC data access guidelines is required
+   - No warranty is provided regarding SEC compliance
+
+9. TERMINATION
+   - This license terminates automatically if you fail to comply with its terms
+   - Upon termination, you must cease all use of the Software
+   - All copies must be destroyed or returned
+
+10. GOVERNING LAW
+    - This license is governed by applicable copyright and intellectual property laws
+    - Any disputes shall be resolved in accordance with applicable law
+
+PERMITTED USES:
+- Personal financial analysis and modeling
+- Academic research and education
+- Non-profit research organizations
+- Learning and skill development
+
+PROHIBITED USES:
+- Commercial software development
+- For-profit business operations
+- Financial services for clients
+- Resale or commercial distribution
+- Integration into commercial products
+
+For licensing inquiries, commercial use requests, or questions about permitted uses, 
+please contact: support@henrychien.com
+
+This license is effective as of the date of distribution and applies to all 
+versions and derivatives of the EDGAR Financial Data Extractor software.
 
 ---
 
-This license is intentionally restrictive to protect product integrity and original authorship, while allowing transparency, learning, and contribution within the community.
+By using this Software, you acknowledge that you have read, understood, and 
+agree to be bound by the terms and conditions of this license. If you do not 
+agree to these terms, you must not use the Software.
