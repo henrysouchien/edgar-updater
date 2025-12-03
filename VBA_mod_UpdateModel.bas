@@ -276,7 +276,7 @@ Dim targetPrompt As String
 SelectCurrentRange:
 DoEvents  'Allow Excel to process user switching back to their model
 Set currentRange = Application.InputBox( _
-    prompt:="FYI: You selected source range starting at " & address & vbCrLf & _
+    prompt:="FYI: You selected range starting at " & address & vbCrLf & _
             targetPrompt, _
     Type:=8)
     
