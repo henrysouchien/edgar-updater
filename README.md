@@ -139,6 +139,41 @@ Excel automation module that:
 - **File Management**: Handles download and import of processed data
 - **Error Handling**: Provides user-friendly error messages
 
+### 5. Model Update Macro (`VBA_mod_UpdateModel.bas`)
+
+The `UpdateModel` macro automates updating your financial model with extracted EDGAR data. It matches values from the Raw_data sheet and writes corresponding values into your model.
+
+#### Modes
+
+| Mode | Setting (G19) | Use Case |
+|------|---------------|----------|
+| **Normal** | FALSE or blank | Update current year column using prior year as reference |
+| **Reverse** | TRUE | Backfill prior year column using current year as reference |
+
+#### Settings (Raw_data Sheet)
+
+| Cell | Setting | Description |
+|------|---------|-------------|
+| G11 | Conversion Factor | Scale factor for values (e.g., 1000 for values in thousands) |
+| G19 | Reverse Mode | TRUE = reverse mode, FALSE/blank = normal mode |
+| G22 | Collision Rate | Pre-calculated rate of duplicate matches (auto-populated) |
+
+#### Workflow
+
+1. **Run the macro**: Press `Alt+F8` → Select `UpdateModel` → Run
+2. **Select source range**: Choose the column with values to match against
+3. **Select target cell**: Choose the first cell of the column to update
+4. **Review results**:
+   - Yellow highlighted cells = potential collisions or missing matches
+   - Check the Immediate Window (Ctrl+G) for debug output
+
+#### Features
+
+- **Sign Flipping**: Automatically detects when values are negated (e.g., expenses)
+- **Formula Handling**: Parses formulas and replaces numeric tokens with matched values
+- **Collision Detection**: Flags cells where multiple values could match
+- **Format Preservation**: Copies formatting from source to target range
+
 ## 📊 Data Processing Workflow
 
 ### Standard Quarterly Workflow (Q1-Q3)
