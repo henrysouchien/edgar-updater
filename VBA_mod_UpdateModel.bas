@@ -230,9 +230,9 @@ Dim address As String
 'Select the source range to refer to for the updater to match
 Dim sourcePrompt As String
 If reverseMode Then
-    sourcePrompt = "REVERSE: Select the current year's range of values (SOURCE)."
+    sourcePrompt = "Select the CURRENT YEAR's range of values (to be matched)."
 Else
-    sourcePrompt = "NORMAL: Select the prior year's range of values (SOURCE)."
+    sourcePrompt = "Select the PRIOR YEAR's range of values (to be matched)."
 End If
 
 SelectUpdateRange:
@@ -266,11 +266,12 @@ Dim currentRange As Range
 
 'Select the target range starting point to input new values
 Dim targetPrompt As String
-If reverseMode Then
-    targetPrompt = "Select the *first cell* of the prior year's range to backfill."
-Else
-    targetPrompt = "Select the *first cell* of the current year's range to update."
-End If
+  If reverseMode Then
+      targetPrompt = "Select the *first cell* of the PRIOR YEAR's range (to be updated)."
+  Else
+      targetPrompt = "Select the *first cell* of the CURRENT YEAR's range (to be updated)."
+  End If
+
 
 SelectCurrentRange:
 DoEvents  'Allow Excel to process user switching back to their model
@@ -945,6 +946,10 @@ currentRange.PasteSpecial xlPasteFormats
 currentRange.PasteSpecial xlPasteFormulas
 
 End Sub
+
+
+
+
 
 
 
