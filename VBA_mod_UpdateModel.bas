@@ -7,20 +7,24 @@ Attribute VB_Name = "mod_UpdateModel"
 ' ============================================
 
 ' What it does:
-' This macro copies over the formulas and formats from prior year range
-' to the current year range in the model. It then searches
-' the updater sheet to match prior-year data to current-year data,
-' and finally pastes the current year values into the targeted cells.
+' This macro copies over the formulas and formats from a source range to a target
+' range in your financial model. It then matches values from the updater sheet
+' and writes the corresponding values into the target cells.
+'
+' Supports two modes:
+'   - NORMAL MODE (default): Match prior-year values, write current-year values
+'   - REVERSE MODE: Match current-year values, write prior-year values (for backfilling)
 
 ' Usage:
 '   1. Ensure the Updater sheet is filled with updated current and prior year values
 '       (you can use the integrated Edgar extractor to generate this automatically)
-'   2. Run the macro within your financial model and select the prior year
-'       and current year ranges
-'   3. Review the updated values, including any highlighted missing cells
+'   2. Set Reverse Mode in cell G19 (TRUE = reverse, FALSE/blank = normal)
+'   3. Run the macro and select the source range (values to match against)
+'   4. Select the target starting cell (where to write matched values)
+'   5. Review the updated values, including any highlighted missing cells
 '       or potential duplicates.
 '
-' Last updated: 2024-05-15
+' Last updated: 2025-12-02
 ' ============================================
 
 ' =======================================================================================
@@ -32,7 +36,8 @@ Attribute VB_Name = "mod_UpdateModel"
 '     period values pulled from EDGAR using an external extractor.
 '
 ' FEATURES:
-'     - Copies formats and formulas from prior-year column
+'     - Copies formats and formulas from source to target column
+'     - Supports Normal and Reverse modes for flexible updating direction
 '     - Matches constants and formulas with optional sign flipping
 '     - Applies formatting to highlight collisions or mismatches
 '     - Clears updater sheet with a single macro
@@ -64,22 +69,29 @@ Attribute VB_Name = "mod_UpdateModel"
 '     the Updater sheet. The macro matches constants and formula components based on numeric
 '     similarity, including optional sign flipping, and visually flags mismatches or collisions.
 '
+' Modes:
+'     - NORMAL (G19 = FALSE/blank): Search priorArray, write from currentArray
+'       Use case: Updating current year column using prior year as reference
+'     - REVERSE (G19 = TRUE): Search currentArray, write from priorArray
+'       Use case: Backfilling prior year column using current year as reference
+'
 ' Core Workflow:
-'     1. User selects last year's column (prior period).
-'     2. User selects this year's starting cell (current period).
-'     3. Macro copies formulas/formats, then:
-'         • Matches numeric constants
-'         • Rewrites formulas by replacing matched terms
-'         • Applies flags for unmatched/multi-matched values (collisions)
+'     1. Read mode setting from G19 (reverse mode on/off)
+'     2. User selects source column (values to match against)
+'     3. User selects target starting cell (where to write matched values)
+'     4. Macro copies formulas/formats from source to target, then:
+'         - Matches numeric constants against searchArray
+'         - Rewrites formulas by replacing matched terms with writeArray values
+'         - Applies flags for unmatched/multi-matched values (collisions)
 '
 ' Features:
-'     • Auto-cancels if collision rate is high and user declines
-'     • Skips error/blank cells and common formula constants ("1", "0", "-1")
-'     • Highlights suspicious matches using bold and fill color
-'     • Handles merged cell and range selection errors
+'     - Auto-cancels if collision rate is high and user declines
+'     - Skips error/blank cells and common formula constants ("1", "0", "-1")
+'     - Highlights suspicious matches using bold and fill color
+'     - Handles merged cell and range selection errors
 '
 ' Inputs:
-'     - User-selected prior year and current year ranges (1 column each)
+'     - User-selected source and target ranges (1 column each)
 '     - Updater sheet (default: "Raw_data") with columns:
 '         B: current values
 '         C: prior values
@@ -87,18 +99,19 @@ Attribute VB_Name = "mod_UpdateModel"
 '
 ' Globals / Assumptions:
 '     - Workbook must include a sheet named "Raw_data"
-'     - Cell G16 contains conversion factor (e.g. /1000)
-'     - Cell G19 contains pre-calculated collision rate
-'     - Constants `ConvertData()`, `ConvertSign()`, `ConvertDataBack()`,
-'       `BreakDownFormula()`, `BuildFormula()`, and `HighlightCell()` must exist
+'     - Cell G11 contains conversion factor (e.g. /1000)
+'     - Cell G19 contains reverse mode setting (TRUE/FALSE)
+'     - Cell G22 contains pre-calculated collision rate
+'     - Helper functions: ConvertData(), ConvertSign(), ConvertDataBack(),
+'       BreakDownFormula(), BuildFormula(), HighlightCell()
 '
 ' Output:
-'     - Updates current year column in place
+'     - Updates target column in place
 '     - Flags collisions and unmatched values visually
 '     - Summary messages for completion and error handling
 '
 ' Example Usage:
-'     Select the prior year column, run macro, follow prompts to select current cell
+'     Set G19 to TRUE for reverse mode, run macro, select source and target ranges
 '
 ' =======================================================================================
 
@@ -108,6 +121,7 @@ Public Sub UpdateModel()
 
 Dim currentStage As String
 Dim successfulRun As Boolean
+Dim reverseMode As Boolean
 currentStage = "Initializing"
 successfulRun = False
 
@@ -122,7 +136,7 @@ raw_sheetName = "Raw_data" 'updater sheet
 Dim MatchType As Long
 Dim IndexColumn As Long
 Dim Conversion_factor As Double
-Dim this_yearValue As Double
+Dim targetValue As Double
 Dim matchKey As Variant
 Dim startRange As String
 
@@ -142,7 +156,7 @@ Dim estimatedCollisionRate As Double
 estimatedCollisionRate = 0 ' Default fallback
 
 On Error Resume Next ' Gracefully handle empty or missing cell
-estimatedCollisionRate = ws_Raw.Range("G21").Value
+estimatedCollisionRate = ws_Raw.Range("G22").Value
 On Error GoTo ExitGracefully
 
 If estimatedCollisionRate >= 0.4 Then
@@ -179,8 +193,32 @@ ReDim collisionArray(1 To lastRow)
 For i = 2 To lastRow 'start at row 2 (skip header) and build arrays
     currentArray(i) = ws_Raw.Cells(i, 2).Value         ' Column B = current year
     priorArray(i) = ws_Raw.Cells(i, 3).Value           ' Column C = prior year
-    collisionArray(i) = ws_Raw.Cells(i, 5).Value       ' Column D = collision marker
+    collisionArray(i) = ws_Raw.Cells(i, 5).Value       ' Column E = collision marker
 Next i
+
+' === DECLARE SEARCH/WRITE ARRAYS FOR MODE-AGNOSTIC MATCHING ===
+Dim searchArray() As Variant
+Dim writeArray() As Variant
+
+' === READ REVERSE MODE SETTING FROM CELL ===
+' Cell G19: TRUE/1 = Reverse mode, FALSE/0/blank = Normal mode
+reverseMode = False  ' Default to normal mode
+On Error Resume Next
+reverseMode = CBool(ws_Raw.Range("G19").Value)
+On Error GoTo ExitGracefully
+
+' === ASSIGN SEARCH/WRITE ARRAYS BASED ON MODE ===
+If reverseMode Then
+    ' REVERSE MODE: Search in current period, write from prior period
+    searchArray = currentArray  ' Column B (current year values)
+    writeArray = priorArray     ' Column C (prior year values)
+    Debug.Print "Running in REVERSE MODE: searching current values, writing prior values"
+Else
+    ' NORMAL MODE: Search in prior period, write from current period
+    searchArray = priorArray    ' Column C (prior year values)
+    writeArray = currentArray   ' Column B (current year values)
+    Debug.Print "Running in NORMAL MODE: searching prior values, writing current values"
+End If
 
 ' === SELECT RANGES TO UPDATE ==============================================
 
@@ -189,12 +227,19 @@ currentStage = "Setting Ranges"
 Dim updateRange As Range
 Dim address As String
 
-'Select the prior year's range to refer to for the updater to match
+'Select the source range to refer to for the updater to match
+Dim sourcePrompt As String
+If reverseMode Then
+    sourcePrompt = "REVERSE: Select the current year's range of values (SOURCE)."
+Else
+    sourcePrompt = "NORMAL: Select the prior year's range of values (SOURCE)."
+End If
+
 SelectUpdateRange:
 DoEvents '' Allow user to switch to their financial model before selecting range
 Set updateRange = Application.InputBox( _
     prompt:="Reminder: Save before running and turn off AutoSave. Press Esc to cancel." & vbCrLf & _
-           "In financial model - select last year's range of data to use for update. Tip: Hold shift to select full range.", _
+           sourcePrompt & " Tip: Hold shift to select full range.", _
     Type:=8)
     
 'Block to prevent script using multi-column range
@@ -219,12 +264,19 @@ address = updateRange.Cells(1, 1).address ' get the address of first cell in upd
 
 Dim currentRange As Range
 
-'Select the current year's starting point of range to input new values
+'Select the target range starting point to input new values
+Dim targetPrompt As String
+If reverseMode Then
+    targetPrompt = "Select the *first cell* of the prior year's range to backfill."
+Else
+    targetPrompt = "Select the *first cell* of the current year's range to update."
+End If
+
 SelectCurrentRange:
 DoEvents  'Allow Excel to process user switching back to their model
 Set currentRange = Application.InputBox( _
-    prompt:="FYI: You selected last year's range starting at " & address & vbCrLf & _
-            "In financial model - select the *first cell* of this year's range to update.", _
+    prompt:="FYI: You selected source range starting at " & address & vbCrLf & _
+            targetPrompt, _
     Type:=8)
     
 'Block to prevent selection on more than one cell (will cause errors)
@@ -278,7 +330,7 @@ startRange = currentRange.Cells(1, 1).address 'address of the first cell in the 
 currentRange.Worksheet.Activate
 currentRange.Worksheet.Range(startRange).Select 'select the starting point for the loop
 
-Dim last_yearValue As Double 'setting the last year value as decimal data
+Dim sourceValue As Double 'value from source range cell to match against searchArray
 Dim args As Variant 'variant to store the array
 Dim active_cell As String 'declare string to manipulate the formula as string
 Dim matchedColor As Long
@@ -302,19 +354,19 @@ For x = 1 To NumRows 'loop through the range based on number of rows
 ' === MATCHING LOGIC FOR CONSTANTS =====================
                 
             If ActiveCell.HasFormula = False Then
-                last_yearValue = ConvertData(ActiveCell.Value, Conversion_factor) 'see function to convert data
+                sourceValue = ConvertData(ActiveCell.Value, Conversion_factor) 'see function to convert data
                 found = False
 
                 ' Constants match against updater prior/current arrays (checks with sign flipped if EnabledFlippedMatch = true)
                 
-                For j = 1 To UBound(priorArray, 1)
-                    If IsNumeric(priorArray(j)) And IsNumeric(currentArray(j)) And currentArray(j) <> 0 Then
-                        If Round(priorArray(j), 0) = Round(last_yearValue, 0) Then
-                            this_yearValue = ConvertDataBack(currentArray(j), Conversion_factor)
+                For j = 1 To UBound(searchArray, 1)
+                    If IsNumeric(searchArray(j)) And IsNumeric(writeArray(j)) And writeArray(j) <> 0 Then
+                        If Round(searchArray(j), 0) = Round(sourceValue, 0) Then
+                            targetValue = ConvertDataBack(writeArray(j), Conversion_factor)
                             found = True
                             Exit For
-                        ElseIf EnableFlippedMatch And Round(priorArray(j), 0) = Round(ConvertSign(last_yearValue), 0) Then 'flip sign of current if matched with flipped sign for prior
-                            this_yearValue = ConvertSign(ConvertDataBack(currentArray(j), Conversion_factor))
+                        ElseIf EnableFlippedMatch And Round(searchArray(j), 0) = Round(ConvertSign(sourceValue), 0) Then 'flip sign of current if matched with flipped sign for prior
+                            targetValue = ConvertSign(ConvertDataBack(writeArray(j), Conversion_factor))
                             found = True
                             Exit For
                         End If
@@ -322,7 +374,7 @@ For x = 1 To NumRows 'loop through the range based on number of rows
                 Next j
                 
                 If found Then
-                        ActiveCell = this_yearValue     'Writes new value into cell
+                        ActiveCell = targetValue     'Writes new value into cell
                             If collisionArray(j) = 1 Then
                                 Call HighlightCell(ActiveCell)  ' Mark potential duplicates yellow + bold based on collision flag
                                 collisionCount = collisionCount + 1
@@ -361,58 +413,58 @@ For x = 1 To NumRows 'loop through the range based on number of rows
                         
                         For Count = 1 To 2 'loop twice (once with "-" and once with "+" sign to check for matches)
                             If Count = 1 Then
-                                last_yearValue = ConvertData(args(i), Conversion_factor) 'transforming the token to check with prior array
+                                sourceValue = ConvertData(args(i), Conversion_factor) 'transforming the token to check with search array
                                 Else
-                                    last_yearValue = ConvertSign(ConvertData(args(i), Conversion_factor)) 'check with different sign
+                                    sourceValue = ConvertSign(ConvertData(args(i), Conversion_factor)) 'check with different sign
                             End If
-        
+
                             matchedVal = args(i) 'individual token to match
-                            
+
                             'Debug to check what matched - if it's flipped or not
                             Debug.Print "Matching raw value: " & CStr(matchedVal) & _
                                         " | Converted: " & CStr(ConvertData(matchedVal, Conversion_factor)) & _
                                         " | Flipped: " & CStr(ConvertSign(ConvertData(matchedVal, Conversion_factor)))
 
-                            matchKey = Application.Match(Round(last_yearValue, 0), priorArray, MatchType) 'match functionality to compare with prior period values in updater sheet
-                            
+                            matchKey = Application.Match(Round(sourceValue, 0), searchArray, MatchType) 'match functionality to compare with search array values in updater sheet
+
                                 If IsError(matchKey) = False Then
-                                    this_yearValue = ConvertDataBack(currentArray(matchKey), Conversion_factor)  'Use conversion function to transform raw current year data to value to input
+                                    targetValue = ConvertDataBack(writeArray(matchKey), Conversion_factor)  'Use conversion function to transform raw data to value to input
                                         If Count = 2 Then
                                             matchedFlipped = True
-                                            this_yearValue = ConvertSign(this_yearValue)  'Write the new value into cell in financial model
+                                            targetValue = ConvertSign(targetValue)  'Write the new value into cell in financial model
                                         End If
-                        
-                                    args(i) = Format$(this_yearValue, "+0.###;-0.###")  'format value being writing it back into formula
-                                    
-                                    'Debug messages to check current value and how it's transformed
-                                    
-                                    Debug.Print "current period value (args[" & i & "]): " & CStr(args(i)) & _
+
+                                    args(i) = Format$(targetValue, "+0.###;-0.###")  'format value being writing it back into formula
+
+                                    'Debug messages to check target value and how it's transformed
+
+                                    Debug.Print "target value (args[" & i & "]): " & CStr(args(i)) & _
                                     " | MatchKey: " & CStr(matchKey) & _
                                     " | Used flipped match? Count=" & CStr(Count) & _
-                                    " | Final current val to insert: " & CStr(this_yearValue)
-                                    
+                                    " | Final target val to insert: " & CStr(targetValue)
+
                                     ActiveCell.formula = BuildFormula(args) 'rebuild the cell's formula with new values
-                                    
+
                                         If collisionArray(matchKey) = 1 Then 'check for collision flag for that matched row index
                                                 Call HighlightCell(ActiveCell)
                                                 collisionCount = collisionCount + 1  ' Increment collision count
                                         End If
                                     Count = 2 'end loop early with match
-                                    
+
                                     Else
                                         If Count = 2 Then
-                                            this_yearValue = 0 'replace with "0" if no match
-                                            args(i) = this_yearValue
-                                        
+                                            targetValue = 0 'replace with "0" if no match
+                                            args(i) = targetValue
+
                                         'Debug messages to check non-matched values
-                                        
-                                        Debug.Print "current period value (args[" & i & "]): " & CStr(args(i)) & _
+
+                                        Debug.Print "target value (args[" & i & "]): " & CStr(args(i)) & _
                                                     " | MatchKey: " & CStr(matchKey) & _
                                                     " | Used flipped match? Count=" & CStr(Count) & _
-                                                    " | Final current val to insert: " & CStr(this_yearValue)
-                                        
+                                                    " | Final target val to insert: " & CStr(targetValue)
+
                                         ActiveCell.formula = BuildFormula(args)
-                                        
+
                                         Else
                                         End If
                                     End If
@@ -484,7 +536,7 @@ ExitGracefully:
 '     Useful for resetting the sheet between EDGAR-based updates.
 '
 ' Behavior:
-'     - Targets columns A–E (Description, Current Year, Prior Year, Role, Collision Flag)
+'     - Targets columns A?E (Description, Current Year, Prior Year, Role, Collision Flag)
 '     - Clears cell contents
 '     - Removes formatting (fill color, font styles, borders, number format)
 '
@@ -720,7 +772,7 @@ End Function
 '     Output: Array("G7", "/", "F7", "-", "1")
 '
 ' Dependencies:
-'     None — purely string parsing logic.
+'     None ? purely string parsing logic.
 '
 ' Use Case:
 '     Used in conjunction with token-by-token replacement workflows for rebuilding financial formulas
@@ -865,8 +917,8 @@ End Sub
 ' Scope:       Private
 '
 ' Description:
-'     Copies formatting and formulas from the prior year’s range (`updateRange`) into the
-'     current year’s range (`currentRange`) in a financial model.
+'     Copies formatting and formulas from the prior year?s range (`updateRange`) into the
+'     current year?s range (`currentRange`) in a financial model.
 '
 ' Behavior:
 '     - Copies cell formats (e.g., number formats, fonts, colors, borders)
@@ -874,7 +926,7 @@ End Sub
 '     - Leaves cell values blank (assumes values will be overwritten by matching logic later)
 '
 ' Args:
-'     updateRange (Range): The prior period range to copy from (e.g., last year’s column).
+'     updateRange (Range): The prior period range to copy from (e.g., last year?s column).
 '     currentRange (Range): The current period starting range to paste into.
 '
 ' Example:
@@ -893,3 +945,6 @@ currentRange.PasteSpecial xlPasteFormats
 currentRange.PasteSpecial xlPasteFormulas
 
 End Sub
+
+
+
