@@ -3220,16 +3220,19 @@ def run_edgar_pipeline(
     sheet["H4"] = str(FULL_YEAR_MODE)
     
     # === Choose the correct dataframe
+    # NOTE: Reassignments commented out to preserve visual_current_value/visual_prior_value
+    # columns applied by apply_visual_signs() at lines 3140-3153. Reassigning here would
+    # overwrite the visual-signed export_df with the raw dataframes.
     if FOUR_Q_MODE and FULL_YEAR_MODE:
         print("\n📦 FY mode — exporting full FY combined table.")
-        export_df = df_final_fy
+        #export_df = df_final_fy  # Keep visual-signed version from earlier
     elif FOUR_Q_MODE:
         print("\n📦 4Q mode — exporting full 4Q combined table.")
-        export_df = df_final_combined
-        
+        #export_df = df_final_combined  # Keep visual-signed version from earlier
+
     else:
         print("\n📦 Normal 10-Q mode — exporting full quarterly combined table.")
-        #export_df = df_final
+        #export_df = df_final  # Keep visual-signed version from earlier
     
     # === STRONG final clean before export ===
     
