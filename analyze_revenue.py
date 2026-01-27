@@ -1,3 +1,26 @@
+"""
+analyze_revenue.py - Revenue analysis helper script
+
+STATUS: Experimental / Needs Refactoring
+CREATED: During agent workflow testing (Jan 2026)
+
+This script was created to help analyze API response data during testing.
+It parses JSON from stdin and extracts revenue by segment and geography.
+
+TODO:
+- Abstract into reusable functions (e.g., get_metric_by_segment())
+- Remove hardcoded values (80000 threshold, 1000 filter)
+- Accept ticker/quarter as parameters instead of hardcoded "Q3 2024"
+- Could be integrated into a utils/analysis.py module
+
+USAGE (current):
+    curl "API_URL" | python analyze_revenue.py
+
+USAGE (future):
+    from analysis import analyze_revenue
+    analyze_revenue(data, metric="Revenue", breakdown=["segment", "geo"])
+"""
+
 import json
 import sys
 

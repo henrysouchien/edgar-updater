@@ -1,6 +1,30 @@
+"""
+find_products.py - Attempt to find product-level revenue breakdown
+
+STATUS: Experimental / Needs Refactoring
+CREATED: During agent workflow testing (Jan 2026)
+
+This script was created to investigate whether product segments (iPhone, Mac, etc.)
+are available in the XBRL data. Finding: Product segments are NOT reliably available
+in standard XBRL - only geographic segments are consistently reported.
+
+Currently has hardcoded file path from a specific test run.
+
+TODO:
+- Remove hardcoded file path
+- Accept input via stdin or command line argument
+- Document finding: product segments require custom XBRL tags (aapl:*)
+- Consider removing if product segments remain unavailable
+- Or repurpose to detect company-specific custom tags
+
+NOTE: This script revealed that geographic segments (axis_segment) work well,
+but product breakdowns require parsing company-specific extensions.
+"""
+
 import json
 
 # Read the file directly
+# TODO: Change to stdin or parameterized input
 with open('/Users/henrychien/.claude/projects/-Users-henrychien-Documents-Jupyter-Edgar-updater/e98a92be-09b5-4ceb-ae6c-6d536e0f9f29/tool-results/toolu_019HzU8qmi7GWkQdQ5p8L7Lq.txt') as f:
     content = f.read()
     data = json.loads(content.strip().split('\n')[0])
