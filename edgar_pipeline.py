@@ -13,7 +13,8 @@ def run_edgar_pipeline(
     full_year_mode,
     debug_mode,
     excel_file,
-    sheet_name
+    sheet_name,
+    return_json=False
 ):
     global TICKER, YEAR, QUARTER, FULL_YEAR_MODE, DEBUG_MODE, EXCEL_FILE, SHEET_NAME
     # Set variables from function inputs
@@ -3425,8 +3426,51 @@ def run_edgar_pipeline(
     
     
     print(f"\n📊 Final Metrics Dictionary:\n{json.dumps(metrics, indent=2)}")
-    
-    
+
+    # === Return JSON-serializable dict if requested (for /api/financials) ===
+    if return_json:
+        # Filter to essential columns for API consumption
+        API_COLUMNS = [
+            "tag", "date_type", "presentation_role",
+            "current_period_value", "prior_period_value",
+            "visual_current_value", "visual_prior_value",
+            "end_current", "end_prior",  # TODO: investigate end_prior inconsistency (sometimes matches end_current)
+            "axis_segment", "axis_geo", "collision_flag"
+        ]
+        api_df = export_df[[col for col in API_COLUMNS if col in export_df.columns]].copy()
+
+        # Convert numpy types to native Python for JSON serialization
+        for col in api_df.select_dtypes(include=['int64', 'float64']).columns:
+            api_df[col] = api_df[col].apply(lambda x: None if pd.isna(x) else (int(x) if float(x).is_integer() else float(x)))
+
+        # Convert date columns to strings
+        for col in ['end_current', 'end_prior']:  # Convert date columns to strings
+            if col in api_df.columns:
+                api_df[col] = api_df[col].apply(lambda x: str(x) if pd.notna(x) else None)
+
+        # Build response dict
+        facts = api_df.to_dict(orient="records")
+
+        return {
+            "status": "success",
+            "metadata": {
+                "ticker": TICKER,
+                "year": YEAR,
+                "quarter": QUARTER,
+                "full_year_mode": FULL_YEAR_MODE,
+                "total_facts": len(facts),
+                "source": {
+                    "filing_type": "10-K" if FOUR_Q_MODE else "10-Q",
+                    "period_end": target_10k["document_period_end"] if FOUR_Q_MODE else target_10q["document_period_end"],
+                    "url": target_10k["url"] if FOUR_Q_MODE else target_10q["url"]
+                }
+            },
+            "facts": facts
+        }
+
+    # Existing implicit return None for backward compatibility
+
+
     # In[ ]:
     
     
