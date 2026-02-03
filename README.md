@@ -27,6 +27,19 @@ This system addresses the challenge of manually extracting and updating financia
                        └──────────────────┘    └─────────────────┘
 ```
 
+## 🔗 Related: Excel Add-in (AI Chat Interface)
+
+A separate package provides an AI-powered chat interface for Excel:
+
+**Location:** `../AI-excel-addin/`
+
+This Office Add-in allows Claude to:
+- Chat with users in Excel's task pane
+- Read/write spreadsheet cells via Office.js
+- Fetch SEC financial data via this backend's API
+
+See `../AI-excel-addin/ARCHITECTURE.md` for details. The add-in connects to `app.py` endpoints defined in `PLAN-edgar-mcp-refactor.md`.
+
 ## 📁 Project Structure
 
 ```
