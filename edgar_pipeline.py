@@ -16,7 +16,6 @@ def run_edgar_pipeline(
     sheet_name,
     return_json=False
 ):
-    global TICKER, YEAR, QUARTER, FULL_YEAR_MODE, DEBUG_MODE, EXCEL_FILE, SHEET_NAME
     # Set variables from function inputs
     TICKER = ticker
     YEAR = year
@@ -3533,4 +3532,3 @@ def run_edgar_pipeline(
 
     
     
-

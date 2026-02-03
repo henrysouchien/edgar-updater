@@ -65,6 +65,29 @@ Edgar_updater/
 - Excel (Office 365, 2021, or compatible)
 - Internet connection for SEC EDGAR access
 
+### MCP Server (Claude Code)
+
+This repo includes an MCP server exposing `get_filings`, `get_financials`, and `get_metric`.
+
+1. Install dependencies (includes `mcp`):
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Add the MCP server to your Claude config (adjust paths if needed):
+   ```json
+   {
+     "mcpServers": {
+       "edgar-financials": {
+         "command": "python",
+         "args": ["/Users/henrychien/Documents/Jupyter/Edgar_updater/mcp_server.py"],
+         "env": {
+           "PYTHONPATH": "/Users/henrychien/Documents/Jupyter/Edgar_updater"
+         }
+       }
+     }
+   }
+   ```
+
 ### Installation
 
 1. **Clone or download the project**

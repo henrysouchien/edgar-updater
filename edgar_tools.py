@@ -258,20 +258,19 @@ def get_financials(ticker: str, year: int, quarter: int, full_year_mode: bool = 
     return result
 
 
-def get_metric(
+def get_metric_from_result(
+    result: dict,
+    metric_name: str,
     ticker: str,
     year: int,
     quarter: int,
-    metric_name: str,
     full_year_mode: bool = False,
 ) -> dict:
-    """
-    Get a specific financial metric.
-    """
-    result = get_financials(ticker, year, quarter, full_year_mode)
-
     if result.get("status") != "success":
         return result
+
+    if not metric_name:
+        return {"status": "error", "message": "Metric name is required"}
 
     search_tags = METRIC_ALIASES.get(metric_name.lower(), [metric_name])
 
@@ -361,3 +360,17 @@ def get_metric(
         "yoy_change_pct": f"{yoy_pct}%" if yoy_pct is not None else None,
         "source": result.get("metadata", {}).get("source", {}),
     }
+
+
+def get_metric(
+    ticker: str,
+    year: int,
+    quarter: int,
+    metric_name: str,
+    full_year_mode: bool = False,
+) -> dict:
+    """
+    Get a specific financial metric.
+    """
+    result = get_financials(ticker, year, quarter, full_year_mode)
+    return get_metric_from_result(result, metric_name, ticker, year, quarter, full_year_mode)
