@@ -26,6 +26,8 @@ def run_edgar_pipeline(
     EXCEL_FILE = excel_file
     SHEET_NAME = sheet_name
 
+    excel_enabled = excel_file is not None and sheet_name is not None
+
     # ... FULL pipeline logic from your Jupyter notebook pasted here, unchanged ...
 
     #!/usr/bin/env python
@@ -79,13 +81,14 @@ def run_edgar_pipeline(
     import re
     from datetime import datetime
     from bs4 import BeautifulSoup
-    import openpyxl
-    from openpyxl import load_workbook
     import html
     import time
     import os
     import json
     from datetime import datetime
+    if excel_enabled:
+        import openpyxl
+        from openpyxl import load_workbook
     
     
     # In[94]:
@@ -130,10 +133,11 @@ def run_edgar_pipeline(
     import os
     
     # === Check if Excel file exists ===
-    if not os.path.exists(EXCEL_FILE):
-        print(f"⚠️ Warning: Excel file '{EXCEL_FILE}' does not exist yet. It will need to be created or exported later.")
-    else:
-        print(f"✅ Excel file '{EXCEL_FILE}' found.")
+    if excel_enabled:
+        if not os.path.exists(EXCEL_FILE):
+            print(f"⚠️ Warning: Excel file '{EXCEL_FILE}' does not exist yet. It will need to be created or exported later.")
+        else:
+            print(f"✅ Excel file '{EXCEL_FILE}' found.")
     
     # === Check if CIK was properly loaded ===
     if not CIK:
@@ -3187,39 +3191,10 @@ def run_edgar_pipeline(
     # === FINAL EXPORTS TO MODEL ==================================
     # === Export values to updater file
     
-    # === Set Export Folder and Filename
-    
-    os.makedirs(EXPORT_UPDATER_DIR, exist_ok=True)
-    
-    if FULL_YEAR_MODE:
-        export_updater_filename = f"{TICKER}_FY{str(YEAR)[-2:]}_{EXCEL_FILE}"
-    else:
-        export_updater_filename = f"{TICKER}_{QUARTER}Q{str(YEAR)[-2:]}_{EXCEL_FILE}"
-        
-    export_updater_path = os.path.join(EXPORT_UPDATER_DIR, export_updater_filename)
-    
-    # === Load the Updater workbook
-    updater_path = EXCEL_FILE  # Adjust if different
-    wb = openpyxl.load_workbook(updater_path, keep_vba=True)
-    
-    # === Select the Raw_data sheet
-    sheet = wb["Raw_data"]
-    
-    # === Clear old data (optional, but safe to do)
-    for row in sheet["A2:E5000"]:
-        for cell in row:
-            cell.value = None
-    
-    # === Write metadata in columns G–H (optional)
-    sheet["G1"] = "Ticker"
-    sheet["H1"] = TICKER
-    sheet["G2"] = "Year"
-    sheet["H2"] = YEAR
-    sheet["G3"] = "Quarter"
-    sheet["H3"] = QUARTER
-    sheet["G4"] = "Full Year Mode"
-    sheet["H4"] = str(FULL_YEAR_MODE)
-    
+    export_updater_filename = None
+    export_updater_path = None
+    sheet = None
+
     # === Choose the correct dataframe
     # NOTE: Reassignments commented out to preserve visual_current_value/visual_prior_value
     # columns applied by apply_visual_signs() at lines 3140-3153. Reassigning here would
@@ -3253,32 +3228,63 @@ def run_edgar_pipeline(
     # === Reset index so idx=0,1,2,3... and sort by presentation role
     export_df = export_df.reset_index(drop=True)
     
-    # === Paste the selected DataFrame into Updater
-    for idx, row in export_df.iterrows():
-        sheet.cell(row=idx+2, column=1, value=row["tag"])
-        sheet.cell(row=idx+2, column=2, value=row.get("visual_current_value", row.get("current_period_value")))
-        sheet.cell(row=idx+2, column=3, value=row.get("visual_prior_value", row.get("prior_period_value")))
-        sheet.cell(row=idx+2, column=4, value=row.get("presentation_role", ""))  # Presentation information
-        sheet.cell(row=idx+2, column=5, value=row.get("collision_flag", 0))      # Collision flag
-        
-    # === Save the workbook to export folder
-    wb.save(export_updater_path)
-    print(f"📁 Updater file saved to: {export_updater_path}")
-    
-    wb.save(updater_path)
-    print(f"📁 Updater file also saved to: {updater_path}")
-    
-    
-    # === Export summary
-    
-    if FULL_YEAR_MODE:
-        period_label = f"FY {YEAR}"
-    else:
-        period_label = f"{QUARTER}Q {YEAR}"
-    
-    print(f"\n📄 Export summary: {period_label} data from {TICKER} ({CIK}) successfully written to {EXCEL_FILE}")
-    print(f"✅ Data written to sheet Raw_data starting from A2.")
-    print(f"📊 Total rows: {len(export_df)}")
+    if excel_enabled:
+        # === Set Export Folder and Filename
+        os.makedirs(EXPORT_UPDATER_DIR, exist_ok=True)
+
+        if FULL_YEAR_MODE:
+            export_updater_filename = f"{TICKER}_FY{str(YEAR)[-2:]}_{EXCEL_FILE}"
+        else:
+            export_updater_filename = f"{TICKER}_{QUARTER}Q{str(YEAR)[-2:]}_{EXCEL_FILE}"
+
+        export_updater_path = os.path.join(EXPORT_UPDATER_DIR, export_updater_filename)
+
+        # === Load the Updater workbook
+        updater_path = EXCEL_FILE  # Adjust if different
+        wb = openpyxl.load_workbook(updater_path, keep_vba=True)
+
+        # === Select the Raw_data sheet
+        sheet = wb["Raw_data"]
+
+        # === Clear old data (optional, but safe to do)
+        for row in sheet["A2:E5000"]:
+            for cell in row:
+                cell.value = None
+
+        # === Write metadata in columns G–H (optional)
+        sheet["G1"] = "Ticker"
+        sheet["H1"] = TICKER
+        sheet["G2"] = "Year"
+        sheet["H2"] = YEAR
+        sheet["G3"] = "Quarter"
+        sheet["H3"] = QUARTER
+        sheet["G4"] = "Full Year Mode"
+        sheet["H4"] = str(FULL_YEAR_MODE)
+
+        # === Paste the selected DataFrame into Updater
+        for idx, row in export_df.iterrows():
+            sheet.cell(row=idx+2, column=1, value=row["tag"])
+            sheet.cell(row=idx+2, column=2, value=row.get("visual_current_value", row.get("current_period_value")))
+            sheet.cell(row=idx+2, column=3, value=row.get("visual_prior_value", row.get("prior_period_value")))
+            sheet.cell(row=idx+2, column=4, value=row.get("presentation_role", ""))  # Presentation information
+            sheet.cell(row=idx+2, column=5, value=row.get("collision_flag", 0))      # Collision flag
+
+        # === Save the workbook to export folder
+        wb.save(export_updater_path)
+        print(f"📁 Updater file saved to: {export_updater_path}")
+
+        wb.save(updater_path)
+        print(f"📁 Updater file also saved to: {updater_path}")
+
+        # === Export summary
+        if FULL_YEAR_MODE:
+            period_label = f"FY {YEAR}"
+        else:
+            period_label = f"{QUARTER}Q {YEAR}"
+
+        print(f"\n📄 Export summary: {period_label} data from {TICKER} ({CIK}) successfully written to {EXCEL_FILE}")
+        print(f"✅ Data written to sheet Raw_data starting from A2.")
+        print(f"📊 Total rows: {len(export_df)}")
     
     # === Show filing references for quarterly mode
     
@@ -3401,25 +3407,26 @@ def run_edgar_pipeline(
     # In[146]:
     
     
-    # === Export .xlsx version (non-macro, values only)
-    export_clean_filename = export_updater_filename.replace(".xlsm", ".xlsx")
-    export_clean_path = os.path.join(EXPORT_UPDATER_DIR, export_clean_filename)
-    
-    # Create a brand new workbook
-    wb_clean = openpyxl.Workbook()
-    sheet_clean = wb_clean.active
-    sheet_clean.title = "Raw_data"
-    
-    # Copy raw values from original sheet
-    data_row_count = len(export_df)
-    
-    for row in sheet.iter_rows(min_row=1, max_row=data_row_count + 1, max_col=5):
-        for cell in row:
-            sheet_clean.cell(row=cell.row, column=cell.column, value=cell.value)
-    
-    # Save the clean .xlsx file
-    wb_clean.save(export_clean_path)
-    print(f"📁 Clean non-macro .xlsx file saved to: {export_clean_path}")
+    if excel_enabled and sheet is not None and export_updater_filename is not None:
+        # === Export .xlsx version (non-macro, values only)
+        export_clean_filename = export_updater_filename.replace(".xlsm", ".xlsx")
+        export_clean_path = os.path.join(EXPORT_UPDATER_DIR, export_clean_filename)
+
+        # Create a brand new workbook
+        wb_clean = openpyxl.Workbook()
+        sheet_clean = wb_clean.active
+        sheet_clean.title = "Raw_data"
+
+        # Copy raw values from original sheet
+        data_row_count = len(export_df)
+
+        for row in sheet.iter_rows(min_row=1, max_row=data_row_count + 1, max_col=5):
+            for cell in row:
+                sheet_clean.cell(row=cell.row, column=cell.column, value=cell.value)
+
+        # Save the clean .xlsx file
+        wb_clean.save(export_clean_path)
+        print(f"📁 Clean non-macro .xlsx file saved to: {export_clean_path}")
     
     
     # In[147]:
@@ -3526,5 +3533,4 @@ def run_edgar_pipeline(
 
     
     
-
 
