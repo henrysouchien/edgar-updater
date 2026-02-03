@@ -6,9 +6,9 @@ MCP Server for EDGAR Financial Data.
 import asyncio
 import json
 
-from mcp.server import Server
+from mcp.server import InitializationOptions, Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import ServerCapabilities, TextContent, Tool
 
 from edgar_tools import get_filings, get_financials, get_metric
 
@@ -118,7 +118,15 @@ async def call_tool(name: str, arguments: dict):
 
 async def main():
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream)
+        await server.run(
+            read_stream,
+            write_stream,
+            InitializationOptions(
+                server_name="edgar-financials",
+                server_version="0.1.0",
+                capabilities=ServerCapabilities(tools={}),
+            ),
+        )
 
 
 if __name__ == "__main__":
