@@ -9,6 +9,8 @@ This system addresses the challenge of manually extracting and updating financia
 - **Automated XBRL Extraction**: Pulls structured financial data from SEC EDGAR filings
 - **Intelligent Data Enrichment**: Categorizes financial periods, maps dimensional axes, and handles presentation roles
 - **Excel Integration**: Seamless VBA-powered integration with financial models
+- **REST API**: Flask web app with JSON endpoints for financials, filings, and metrics
+- **MCP Server**: Claude Code integration via Model Context Protocol
 - **Quarterly & Annual Workflows**: Supports both quarterly (10-Q) and annual (10-K) filing processing
 - **4Q Calculation Support**: Special handling for Q4 filings with full-year calculations
 
@@ -21,10 +23,16 @@ This system addresses the challenge of manually extracting and updating financia
 └─────────────────┘    └──────────────────┘    └─────────────────┘
                                 │                        │
                                 ▼                        ▼
-                       ┌──────────────────┐    ┌─────────────────┐
-                       │  Flask Web App   │    │  SEC EDGAR API  │
-                       │  (API Endpoints) │    │  (XBRL Data)    │
-                       └──────────────────┘    └─────────────────┘
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│  Claude Code    │───►│  Flask Web App   │───►│  SEC EDGAR API  │
+│  (MCP Server)   │    │  (API Endpoints) │    │  (XBRL Data)    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                                ▲
+                                │
+                       ┌──────────────────┐
+                       │  Excel Add-in    │
+                       │  (AI Assistant)  │
+                       └──────────────────┘
 ```
 
 ## 🔗 Related: Excel Add-in (AI Chat Interface)
@@ -44,17 +52,46 @@ See `../AI-excel-addin/ARCHITECTURE.md` for details. The add-in connects to `app
 
 ```
 Edgar_updater/
-├── edgar_pipeline.py          # Core extraction and processing logic
-├── run_edgar_extractor.py     # Command-line interface
+├── edgar_pipeline.py          # Core extraction and processing logic (~3500 lines)
+├── edgar_tools.py             # Tool wrappers: get_financials, get_metric, get_filings
+├── mcp_server.py              # MCP server for Claude Code integration
+├── app.py                     # Flask web app (API + web UI)
 ├── config.py                  # Configuration settings
 ├── utils.py                   # Utility functions and helpers
 ├── enrich.py                  # Data enrichment functions
-├── export_final.py            # Export and finalization logic
 ├── requirements.txt           # Python dependencies
 ├── Updater_EDGAR.xlsm         # Excel workbook with VBA macros
-├── VBA_mod_GetData.bas        # VBA module for data retrieval
-├── VBA_mod_UpdateModel.bas    # VBA module for model updates
-└── README.md                  # This file
+├── README.md                  # This file
+│
+├── docs/                      # Documentation
+│   ├── MCP_SETUP.md           # MCP server setup & troubleshooting
+│   ├── APP_ARCHITECTURE.md    # Flask app architecture
+│   ├── CHANGES.md             # Change log
+│   └── plans/                 # Implementation plans
+│       └── PLAN-edgar-mcp-refactor.md
+│
+├── vba/                       # VBA macro source files
+│   ├── VBA_mod_GetData.bas
+│   └── VBA_mod_UpdateModel.bas
+│
+├── exports/                   # Generated output files & cache
+├── metrics/                   # Pipeline metrics JSON
+├── error_logs/                # Error logs (JSON)
+├── pipeline_logs/             # Pipeline execution logs
+├── usage_logs/                # Usage tracking (request_log.jsonl)
+├── notebooks/                 # Jupyter notebooks (analysis)
+├── archive/                   # Archived old scripts
+│
+├── deploy.sh                  # EC2 deployment script
+├── update_local.sh            # Local update & zip for deploy
+├── update_remote.sh           # Remote update script
+├── backup.sh                  # Backup script
+├── install_redis.sh           # Redis installation script
+├── monitor_usage.py           # Usage monitoring
+├── generate_api_key.py        # API key generation
+├── valid_tickers.csv          # Valid stock tickers list
+├── sp500_tickers.csv          # S&P 500 tickers list
+└── valid_keys.json            # API keys configuration
 ```
 
 ## 🚀 Quick Start
@@ -103,19 +140,29 @@ This repo includes an MCP server exposing `get_filings`, `get_financials`, and `
 
 ### Basic Usage
 
-#### Command Line Interface
+#### Web UI
 
-Extract data for a specific company and period:
+1. Start the Flask server:
+   ```bash
+   python app.py
+   ```
+2. Open `http://localhost:5000` in your browser
+3. Enter ticker, year, and quarter, then submit
+
+#### REST API
 
 ```bash
-# Basic quarterly extraction
-python run_edgar_extractor.py AAPL 2023 2
+# Get financial data as JSON
+curl "http://localhost:5000/api/financials?ticker=AAPL&year=2024&quarter=3"
 
-# Full-year mode (Q4 only)
-python run_edgar_extractor.py AAPL 2023 4 FY
+# Get SEC filing metadata
+curl "http://localhost:5000/api/filings?ticker=AAPL&year=2024&quarter=3"
 
-# With debug mode
-python run_edgar_extractor.py AAPL 2023 2 DEBUG
+# Get a specific metric
+curl "http://localhost:5000/api/metric?ticker=AAPL&year=2024&quarter=3&metric_name=revenue"
+
+# Trigger pipeline and download Excel file
+curl "http://localhost:5000/trigger_pipeline?ticker=AAPL&year=2024&quarter=3"
 ```
 
 #### Excel Integration
@@ -136,7 +183,7 @@ python run_edgar_extractor.py AAPL 2023 2 DEBUG
 
 ### 1. `edgar_pipeline.py` - Main Processing Engine
 
-The heart of the system that handles:
+The heart of the system (~3500 lines) that handles:
 
 - **Filing Discovery**: Fetches recent 10-Q and 10-K filings from SEC EDGAR
 - **XBRL Extraction**: Parses inline XBRL data from filing documents
@@ -145,12 +192,41 @@ The heart of the system that handles:
 - **4Q Calculations**: Special logic for Q4 full-year calculations
 
 **Key Functions**:
-- `run_edgar_pipeline()`: Main entry point
+- `run_edgar_pipeline()`: Main entry point (supports both Excel and JSON output)
 - `extract_facts_with_document_period()`: XBRL fact extraction
 - `enrich_filing()`: Data categorization and enrichment
 - `zip_match_in_order()`: Period-to-period data matching
 
-### 2. `utils.py` - Utility Functions
+### 2. `edgar_tools.py` - Tool Wrappers
+
+Higher-level functions that wrap the pipeline for MCP and API use:
+
+- **`get_filings(ticker, year, quarter)`**: Fetches SEC filing metadata (URLs, dates, fiscal periods)
+- **`get_financials(ticker, year, quarter, full_year_mode)`**: Extracts all financial facts as structured JSON
+- **`get_metric(ticker, year, quarter, metric_name, full_year_mode)`**: Gets a specific metric with current/prior values and YoY change
+- **`get_metric_from_result(result, metric_name, ...)`**: Filters a metric from pre-fetched financials (avoids re-running pipeline)
+
+**Built-in metric aliases**: `revenue`, `net_income`, `eps`, `gross_profit`, `operating_income`, `cash`, `total_assets`, `total_debt`
+
+### 3. `mcp_server.py` - MCP Server
+
+Exposes three tools via Model Context Protocol for Claude Code/Desktop integration:
+- `get_filings` - Filing metadata
+- `get_financials` - Full financial data extraction
+- `get_metric` - Specific metric lookup
+
+### 4. `app.py` - Flask Web Application
+
+Web server providing multiple interfaces:
+
+- **Web UI** (`/`): HTML form for manual extraction
+- **JSON API**: `/api/financials`, `/api/filings`, `/api/metric`
+- **Excel VBA integration**: `/trigger_pipeline` endpoint
+- **Rate limiting**: Three-tier system (public, registered, paid) via Redis
+- **Pipeline locking**: Prevents concurrent pipeline executions
+- **File caching**: Serves cached results from `exports/`
+
+### 5. `utils.py` - Utility Functions
 
 Provides essential helper functions:
 
@@ -159,14 +235,14 @@ Provides essential helper functions:
 - **Dimension Extraction**: `extract_dimensions_from_context()` - Parses XBRL dimensional data
 - **Matching Logic**: `run_adaptive_match_keys()` - Intelligent data matching algorithms
 
-### 3. `enrich.py` - Data Enrichment
+### 6. `enrich.py` - Data Enrichment
 
 Enhances extracted data with:
 
 - **Presentation Roles**: `get_concept_roles_from_presentation()` - Maps concepts to presentation hierarchies
 - **Negated Labels**: `get_negated_label_concepts()` - Identifies concepts with negative presentations
 
-### 4. VBA Integration (`VBA_mod_GetData.bas`)
+### 7. VBA Integration (`vba/VBA_mod_GetData.bas`)
 
 Excel automation module that:
 
@@ -175,7 +251,7 @@ Excel automation module that:
 - **File Management**: Handles download and import of processed data
 - **Error Handling**: Provides user-friendly error messages
 
-### 5. Model Update Macro (`VBA_mod_UpdateModel.bas`)
+### 8. Model Update Macro (`vba/VBA_mod_UpdateModel.bas`)
 
 The `UpdateModel` macro automates updating your financial model with extracted EDGAR data. It matches values from the Raw_data sheet and writes corresponding values into your model.
 
@@ -209,6 +285,27 @@ The `UpdateModel` macro automates updating your financial model with extracted E
 - **Formula Handling**: Parses formulas and replaces numeric tokens with matched values
 - **Collision Detection**: Flags cells where multiple values could match
 - **Format Preservation**: Copies formatting from source to target range
+
+## 🌐 API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET/POST | Web UI form for manual extraction |
+| `/api/financials` | GET | JSON financial data (all facts) |
+| `/api/filings` | GET | SEC filing metadata (URLs, dates) |
+| `/api/metric` | GET | Specific metric with YoY change |
+| `/trigger_pipeline` | GET | Excel VBA integration (returns XLSX) |
+| `/run_pipeline` | POST | Programmatic JSON API |
+| `/download/<filename>` | GET | Download generated files |
+| `/generate_key` | POST | Kartra webhook for API key generation |
+
+### Rate Limits
+
+| Tier | Limit | Description |
+|------|-------|-------------|
+| Public | 2 per 7 days | No API key required |
+| Registered | 6 per 7 days | Free API key |
+| Paid | 500 per 7 days | Paid API key |
 
 ## 📊 Data Processing Workflow
 
@@ -266,19 +363,31 @@ The system generates several output files:
 
 ### Debug Mode
 
-Enable debug mode to get detailed processing information:
+Enable debug mode via the web UI checkbox or API parameter:
 
 ```bash
-python run_edgar_extractor.py AAPL 2023 2 DEBUG
+# Via API
+curl "http://localhost:5000/api/financials?ticker=AAPL&year=2024&quarter=3&debug_mode=true"
+
+# Via run_pipeline
+curl -X POST http://localhost:5000/run_pipeline \
+  -H "Content-Type: application/json" \
+  -d '{"ticker":"AAPL","year":2024,"quarter":3,"debug_mode":true}'
 ```
 
 ### Metrics Tracking
 
-The system tracks various metrics during processing:
+The system tracks metrics in the `metrics/` directory during processing:
 
 - **Match Rates**: Success rates for period matching
 - **Extraction Counts**: Number of facts extracted and processed
 - **Processing Times**: Performance metrics for optimization
+
+### Logging
+
+- **`error_logs/`**: Pipeline error details (JSON)
+- **`pipeline_logs/`**: Execution logs per run
+- **`usage_logs/`**: Request and usage tracking (JSONL)
 
 ## 🛠️ Advanced Features
 
@@ -297,6 +406,28 @@ Special handling for Q4 filings:
 - **FY vs YTD Matching**: Aligns full-year and year-to-date data
 - **4Q Calculation**: Computes Q4 values from FY - YTD
 - **Instant Data**: Handles balance sheet and other instant data points
+
+## 🚢 Deployment
+
+The app runs on EC2 with Gunicorn behind a reverse proxy (Nginx/Caddy) for HTTPS.
+
+### Scripts
+
+- **`deploy.sh`**: Full EC2 deployment
+- **`update_local.sh`**: Zips core files for deployment
+- **`update_remote.sh`**: Uploads and restarts on remote server
+- **`backup.sh`**: Backs up the project
+- **`install_redis.sh`**: Sets up Redis for rate limiting
+
+### Production
+
+```bash
+# Build deployment package
+./update_local.sh
+
+# Deploy to EC2
+./update_remote.sh
+```
 
 ## 🤝 Contributing
 
