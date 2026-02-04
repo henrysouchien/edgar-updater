@@ -60,7 +60,6 @@ Edgar_updater/
 ├── config.py                  # Configuration settings
 ├── utils.py                   # Utility functions and helpers
 ├── enrich.py                  # Data enrichment functions
-├── test_8k.py                 # CLI test runner for 8-K extraction
 ├── requirements.txt           # Python dependencies
 ├── Updater_EDGAR.xlsm         # Excel workbook with VBA macros
 ├── README.md                  # This file
@@ -70,6 +69,7 @@ Edgar_updater/
 │   ├── APP_ARCHITECTURE.md    # Flask app architecture
 │   ├── CHANGES.md             # Change log
 │   ├── 8k-testing-guide.md    # 8-K extraction testing guide
+│   ├── test_8k.py             # CLI test runner for 8-K extraction
 │   └── plans/                 # Implementation plans
 │       └── PLAN-edgar-mcp-refactor.md
 │
