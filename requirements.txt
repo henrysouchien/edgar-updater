@@ -12,3 +12,4 @@ rapidfuzz==3.6.1
 python-dotenv==1.0.1
 redis==5.0.1
 mcp
+anthropic>=0.39.0

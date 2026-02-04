@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[2]:
-
+from dotenv import load_dotenv
+load_dotenv()
 
 # === CONFIG & SETUP ==========================================
 
@@ -29,4 +29,7 @@ REQUEST_DELAY = 1  # in seconds
 OUTPUT_METRICS_DIR = "metrics"
 EXPORT_UPDATER_DIR = "exports"
 
+# 8-K earnings release extraction
+ANTHROPIC_MODEL_8K = "claude-sonnet-4-20250514"
+MAX_8K_HTML_BYTES = 500_000
 

@@ -16,19 +16,59 @@ from utils import lookup_cik_from_ticker, parse_date
 # automatically. To support a new metric, find the actual tag(s) used by target
 # companies and add them here. First tag in each list is preferred.
 # TODO: Expand aliases as we identify key metrics across more companies.
+# NOTE: "gross_profit" returns dollar amounts. Some companies (e.g., AAPL) label this
+# "Gross margin" in filings, but we don't include that alias to avoid confusion with
+# the percentage-based gross margin ratio (gross profit / revenue).
 METRIC_ALIASES = {
     "revenue": [
         "Revenues",
         "RevenueFromContractWithCustomerExcludingAssessedTax",
         "SalesRevenueNet",
+        "Operating revenues",
+        "Total revenues",
+        "Net revenues",
+        "Total net sales",
+        "Net sales",
     ],
-    "net_income": ["NetIncomeLoss", "ProfitLoss"],
-    "eps": ["EarningsPerShareDiluted", "EarningsPerShareBasic"],
-    "gross_profit": ["GrossProfit"],
-    "operating_income": ["OperatingIncomeLoss", "OperatingIncome"],
-    "cash": ["CashAndCashEquivalentsAtCarryingValue", "Cash"],
-    "total_assets": ["Assets"],
-    "total_debt": ["LongTermDebt", "LongTermDebtNoncurrent", "DebtCurrent"],
+    "net_income": [
+        "NetIncomeLoss",
+        "ProfitLoss",
+        "Net income",
+        "Net income (loss)",
+        "Net earnings",
+    ],
+    "eps": [
+        "EarningsPerShareDiluted",
+        "EarningsPerShareBasic",
+        "Diluted EPS",
+        "Diluted earnings per share",
+        "Earnings per diluted share",
+        "Earnings per share, diluted",
+    ],
+    "gross_profit": ["GrossProfit", "Gross profit"],
+    "operating_income": [
+        "OperatingIncomeLoss",
+        "OperatingIncome",
+        "Operating income",
+        "Income from operations",
+    ],
+    "cash": [
+        "CashAndCashEquivalentsAtCarryingValue",
+        "Cash and cash equivalents",
+        "Cash",
+    ],
+    "total_assets": ["Total assets", "Assets"],
+    "total_liabilities": [
+        "Liabilities",
+        "Total liabilities",
+    ],
+    "total_debt": [
+        "LongTermDebt",
+        "LongTermDebtNoncurrent",
+        "DebtCurrent",
+        "Total debt",
+        "Long-term debt",
+    ],
 }
 
 
@@ -160,6 +200,23 @@ def enrich_10k_accessions_with_fiscal_year(accessions_10k: list):
     return accessions_10k
 
 
+def _dedup_facts(facts: list, pick_best_fn) -> list:
+    """Deduplicate facts by (tag, date_type), keeping the best from each group."""
+    groups = defaultdict(list)
+    for f in facts:
+        key = (f.get("tag"), f.get("date_type"))
+        groups[key].append(f)
+    # Preserve original ordering by using first-seen key order
+    seen = []
+    seen_keys = set()
+    for f in facts:
+        key = (f.get("tag"), f.get("date_type"))
+        if key not in seen_keys:
+            seen_keys.add(key)
+            seen.append(key)
+    return [pick_best_fn(groups[key]) for key in seen]
+
+
 def build_filing_url(cik: str, accession: str) -> str:
     acc_nodash = accession.replace("-", "")
     return (
@@ -218,6 +275,31 @@ def get_filings(ticker: str, year: int, quarter: int) -> dict:
                     }
                 )
 
+    # Also check for an Item 2.02 8-K earnings release for this period
+    # metadata_only=True skips the exhibit HTML download for this metadata endpoint.
+    # TODO: This means exhibit_url is omitted from the 8-K entry, and period_end
+    # is the expected date (not validated against exhibit content). Consider a
+    # lightweight index.json fetch to get the exhibit filename without downloading HTML.
+    from edgar_8k import find_8k_for_period
+
+    entry, _html, exhibit_url, period_end_str = find_8k_for_period(
+        cik, HEADERS, year, quarter, metadata_only=True
+    )
+    if entry:
+        filing_entry = {
+            "form": "8-K",
+            "accession": entry.get("accession"),
+            "filing_date": entry.get("filing_date"),
+            "period_end": period_end_str,
+            "fiscal_quarter": quarter,
+            "fiscal_year": year,
+            "url": build_filing_url(cik, entry.get("accession")),
+            "items": entry.get("items"),
+        }
+        if exhibit_url:
+            filing_entry["exhibit_url"] = exhibit_url
+        filings.append(filing_entry)
+
     return {
         "status": "success",
         "ticker": ticker,
@@ -227,10 +309,27 @@ def get_filings(ticker: str, year: int, quarter: int) -> dict:
     }
 
 
-def get_financials(ticker: str, year: int, quarter: int, full_year_mode: bool = False) -> dict:
+def get_financials(
+    ticker: str,
+    year: int,
+    quarter: int,
+    full_year_mode: bool = False,
+    source: str = "auto",
+) -> dict:
     """
     Extract all financial facts from SEC filings.
     """
+    # Normalize source param: accept "8K", "8-K", "8k", etc.
+    if source:
+        source = source.strip().lower().replace("-", "")
+
+    # Explicit 8-K request -- skip pipeline entirely
+    if source == "8k":
+        from edgar_8k import get_financials_from_8k
+
+        return get_financials_from_8k(ticker, year, quarter, full_year_mode)
+
+    # Existing pipeline call (unchanged)
     result = run_edgar_pipeline(
         ticker=ticker,
         year=year,
@@ -254,6 +353,14 @@ def get_financials(ticker: str, year: int, quarter: int, full_year_mode: bool = 
                 "period_end": "unknown",
                 "url": None,
             }
+        return result
+
+    # Automatic fallback -- ONLY for "no filing found" type errors
+    error_msg = result.get("message", "").lower()
+    if "not found" in error_msg or "no filing" in error_msg or "no facts" in error_msg:
+        from edgar_8k import get_financials_from_8k
+
+        return get_financials_from_8k(ticker, year, quarter, full_year_mode)
 
     return result
 
@@ -265,6 +372,7 @@ def get_metric_from_result(
     year: int,
     quarter: int,
     full_year_mode: bool = False,
+    date_type=None,
 ) -> dict:
     if result.get("status") != "success":
         return result
@@ -297,26 +405,69 @@ def get_metric_from_result(
                 return fact
         return fact_list[0]
 
-    def find_matching_fact(facts: list, tags: list):
+    def find_all_matching_facts(facts: list, tags: list):
+        """Return all facts matching any alias tag across tiers.
+
+        Stops at the first tier that produces matches (higher tiers are
+        more precise). Within a tier, collects all matching facts across
+        all aliases. Deduplicates by (tag, date_type), picking the best
+        fact (consolidated, with value) from each group.
+        """
+        import re
+
         facts_by_tag = defaultdict(list)
         for fact in facts:
-            raw_tag = fact.get("tag", "")
+            raw_tag = fact.get("tag") or ""  # Guard against None
             facts_by_tag[raw_tag].append(fact)
             # Also index by bare name (strip us-gaap: or other namespace prefixes)
-            if ":" in raw_tag:
+            if raw_tag and ":" in raw_tag:
                 bare_tag = raw_tag.split(":", 1)[1]
                 facts_by_tag[bare_tag].append(fact)
 
+        def collect_tier(match_fn):
+            """Collect all facts matching any alias via match_fn."""
+            matched = []
+            seen = set()
+            for tag in tags:
+                for fact_tag, fact_list in facts_by_tag.items():
+                    if match_fn(tag, fact_tag):
+                        for f in fact_list:
+                            fid = id(f)
+                            if fid not in seen:
+                                seen.add(fid)
+                                matched.append(f)
+            return matched
+
+        # Tier 1: exact match
+        tier1 = []
+        seen = set()
         for tag in tags:
             if tag in facts_by_tag:
-                return pick_best_fact(facts_by_tag[tag])
+                for f in facts_by_tag[tag]:
+                    fid = id(f)
+                    if fid not in seen:
+                        seen.add(fid)
+                        tier1.append(f)
+        if tier1:
+            return _dedup_facts(tier1, pick_best_fact)
 
-        for tag in tags:
-            for fact_tag, fact_list in facts_by_tag.items():
-                if fact_tag.startswith(tag):
-                    return pick_best_fact(fact_list)
+        # Tier 2: prefix match
+        tier2 = collect_tier(lambda tag, ft: ft.startswith(tag))
+        if tier2:
+            return _dedup_facts(tier2, pick_best_fact)
 
-        return None
+        # Tier 3: whole-word match (for 8-K raw labels)
+        patterns = {tag: re.compile(r"\b" + re.escape(tag) + r"\b", re.IGNORECASE) for tag in tags}
+        tier3 = collect_tier(lambda tag, ft: patterns[tag].search(ft))
+        if tier3:
+            return _dedup_facts(tier3, pick_best_fact)
+
+        # Tier 4: substring match (last resort)
+        tier4 = collect_tier(lambda tag, ft: tag.lower() in ft.lower())
+        if tier4:
+            return _dedup_facts(tier4, pick_best_fact)
+
+        return []
 
     facts = result.get("facts", [])
     if not facts:
@@ -325,8 +476,42 @@ def get_metric_from_result(
             "message": f"No facts found in {ticker} Q{quarter} {year} filing",
         }
 
-    matched_fact = find_matching_fact(facts, search_tags)
-    if not matched_fact:
+    # Normalize date_type input (API callers may send lowercase)
+    if date_type and isinstance(date_type, str):
+        date_type = date_type.upper().strip()
+        if date_type not in ("Q", "YTD", "FY"):
+            date_type = None
+
+    # Search all facts for matches, then filter by date_type after
+    all_matches = find_all_matching_facts(facts, search_tags)
+
+    # Apply date_type filter to matches
+    #
+    # TODO: Known issues with date_type filtering and balance sheet items:
+    #
+    # 1. Balance sheet (instant/point-in-time) items are always labeled "Q" in
+    #    the 8-K path and None in the iXBRL pipeline — they never have "FY".
+    #    When full_year_mode=True, BS metrics survive only because the FY/YTD
+    #    filter finds nothing and falls through. This works but is implicit.
+    #
+    # 2. When full_year_mode=False and date_type=None, NO filtering is applied,
+    #    so all date_types (Q, FY, YTD) are returned in the matches list.
+    #    Callers must pick the right one from the list.
+    #
+    # 3. The "source" param on get_financials is currently just an 8-K override
+    #    flag ("8k" vs everything else). There's no source="10k" or "10q" —
+    #    the pipeline selects 10-Q vs 10-K internally based on quarter/year.
+    #
+    if date_type:
+        all_matches = [f for f in all_matches if f.get("date_type") == date_type]
+    elif full_year_mode:
+        fy_matches = [f for f in all_matches if f.get("date_type") == "FY"]
+        if not fy_matches:
+            fy_matches = [f for f in all_matches if f.get("date_type") == "YTD"]
+        if fy_matches:
+            all_matches = fy_matches
+
+    if not all_matches:
         return {
             "status": "error",
             "message": (
@@ -334,30 +519,37 @@ def get_metric_from_result(
             ),
         }
 
-    current = matched_fact.get("visual_current_value")
-    if current is None:
-        current = matched_fact.get("current_period_value")
-    prior = matched_fact.get("visual_prior_value")
-    if prior is None:
-        prior = matched_fact.get("prior_period_value")
-
-    yoy_change = None
-    yoy_pct = None
-    if current is not None and prior is not None and prior != 0:
-        yoy_change = current - prior
-        yoy_pct = round((yoy_change / abs(prior)) * 100, 1)
-
     period = f"FY {year}" if full_year_mode else f"Q{quarter} {year}"
+
+    matches = []
+    for fact in all_matches:
+        current = fact.get("visual_current_value")
+        if current is None:
+            current = fact.get("current_period_value")
+        prior = fact.get("visual_prior_value")
+        if prior is None:
+            prior = fact.get("prior_period_value")
+
+        yoy_change = None
+        yoy_pct = None
+        if current is not None and prior is not None and prior != 0:
+            yoy_change = current - prior
+            yoy_pct = round((yoy_change / abs(prior)) * 100, 1)
+
+        matches.append({
+            "metric": fact.get("tag"),
+            "current_value": current,
+            "prior_value": prior,
+            "yoy_change": yoy_change,
+            "yoy_change_pct": f"{yoy_pct}%" if yoy_pct is not None else None,
+            "date_type": fact.get("date_type"),
+        })
 
     return {
         "status": "success",
         "ticker": ticker,
-        "metric": matched_fact.get("tag"),
         "period": period,
-        "current_value": current,
-        "prior_value": prior,
-        "yoy_change": yoy_change,
-        "yoy_change_pct": f"{yoy_pct}%" if yoy_pct is not None else None,
+        "matches": matches,
         "source": result.get("metadata", {}).get("source", {}),
     }
 
@@ -368,9 +560,19 @@ def get_metric(
     quarter: int,
     metric_name: str,
     full_year_mode: bool = False,
+    source: str = "auto",
+    date_type=None,
 ) -> dict:
     """
     Get a specific financial metric.
     """
-    result = get_financials(ticker, year, quarter, full_year_mode)
-    return get_metric_from_result(result, metric_name, ticker, year, quarter, full_year_mode)
+    result = get_financials(ticker, year, quarter, full_year_mode, source=source)
+    return get_metric_from_result(
+        result,
+        metric_name,
+        ticker,
+        year,
+        quarter,
+        full_year_mode,
+        date_type=date_type,
+    )

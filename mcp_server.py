@@ -21,8 +21,8 @@ async def list_tools():
         Tool(
             name="get_filings",
             description=(
-                "Fetch SEC filing metadata for a company. Returns list of 10-Q and 10-K "
-                "filings with URLs, dates, and fiscal period assignments."
+                "Fetch SEC filing metadata for a company. Returns list of 10-Q, 10-K, "
+                "and 8-K (earnings release) filings with URLs, dates, and fiscal period assignments."
             ),
             inputSchema={
                 "type": "object",
@@ -54,6 +54,12 @@ async def list_tools():
                         "description": "If true, return full-year (10-K) data instead of quarterly",
                         "default": False,
                     },
+                    "source": {
+                        "type": "string",
+                        "enum": ["auto", "8k"],
+                        "default": "auto",
+                        "description": "Data source. 'auto' = try 10-Q/10-K first, fall back to 8-K. '8k' = 8-K earnings release only.",
+                    },
                 },
                 "required": ["ticker", "year", "quarter"],
             },
@@ -80,6 +86,17 @@ async def list_tools():
                         "description": "If true, return full-year data",
                         "default": False,
                     },
+                    "source": {
+                        "type": "string",
+                        "enum": ["auto", "8k"],
+                        "default": "auto",
+                        "description": "Data source. 'auto' = try 10-Q/10-K first, fall back to 8-K. '8k' = 8-K earnings release only.",
+                    },
+                    "date_type": {
+                        "type": "string",
+                        "enum": ["Q", "YTD", "FY"],
+                        "description": "Filter by period type. 'Q' = quarterly, 'YTD' = year-to-date, 'FY' = full-year/annual. If omitted, inferred from full_year_mode.",
+                    },
                 },
                 "required": ["ticker", "year", "quarter", "metric_name"],
             },
@@ -101,6 +118,7 @@ async def call_tool(name: str, arguments: dict):
             year=arguments["year"],
             quarter=arguments["quarter"],
             full_year_mode=arguments.get("full_year_mode", False),
+            source=arguments.get("source", "auto"),
         )
     elif name == "get_metric":
         result = get_metric(
@@ -109,6 +127,8 @@ async def call_tool(name: str, arguments: dict):
             quarter=arguments["quarter"],
             metric_name=arguments["metric_name"],
             full_year_mode=arguments.get("full_year_mode", False),
+            source=arguments.get("source", "auto"),
+            date_type=arguments.get("date_type"),
         )
     else:
         result = {"status": "error", "message": f"Unknown tool: {name}"}

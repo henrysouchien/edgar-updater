@@ -2308,8 +2308,8 @@ def run_edgar_pipeline(
         MIN_KEYS = ["tag"]
     
         # === Trim
-        df_curr_inst_trim = df_curr_inst[MATCH_COLS + ["value", "contextref"]].copy()
-        df_prior_inst_trim = df_prior_inst[MATCH_COLS + ["value", "contextref"]].copy()
+        df_curr_inst_trim = df_curr_inst[MATCH_COLS + ["value", "contextref", "date_type"]].copy()
+        df_prior_inst_trim = df_prior_inst[MATCH_COLS + ["value", "contextref", "date_type"]].copy()
     
         # === Drop duplicates
         df_curr_inst_trim = df_curr_inst_trim.drop_duplicates()
