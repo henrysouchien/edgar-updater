@@ -5,7 +5,7 @@ from collections import defaultdict
 import requests
 
 from config import HEADERS, N_10K, N_10Q
-from edgar_pipeline import run_edgar_pipeline
+from edgar_pipeline import run_edgar_pipeline, FilingNotFoundError
 from utils import lookup_cik_from_ticker, parse_date
 
 
@@ -329,17 +329,23 @@ def get_financials(
 
         return get_financials_from_8k(ticker, year, quarter, full_year_mode)
 
-    # Existing pipeline call (unchanged)
-    result = run_edgar_pipeline(
-        ticker=ticker,
-        year=year,
-        quarter=quarter,
-        full_year_mode=full_year_mode,
-        debug_mode=False,
-        excel_file=None,
-        sheet_name=None,
-        return_json=True,
-    )
+    try:
+        result = run_edgar_pipeline(
+            ticker=ticker,
+            year=year,
+            quarter=quarter,
+            full_year_mode=full_year_mode,
+            debug_mode=False,
+            excel_file=None,
+            sheet_name=None,
+            return_json=True,
+        )
+    except FilingNotFoundError:
+        from edgar_8k import get_financials_from_8k
+
+        return get_financials_from_8k(ticker, year, quarter, full_year_mode)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
     if result.get("status") == "success":
         if "metadata" not in result:
@@ -354,13 +360,6 @@ def get_financials(
                 "url": None,
             }
         return result
-
-    # Automatic fallback -- ONLY for "no filing found" type errors
-    error_msg = result.get("message", "").lower()
-    if "not found" in error_msg or "no filing" in error_msg or "no facts" in error_msg:
-        from edgar_8k import get_financials_from_8k
-
-        return get_financials_from_8k(ticker, year, quarter, full_year_mode)
 
     return result
 

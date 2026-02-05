@@ -6,6 +6,10 @@
 
 # === FULL FUNCTION TO RUN EDGAR EXTRACTOR ==========================================
 
+class FilingNotFoundError(ValueError):
+    """Raised when requested 10-Q/10-K filing is not available."""
+    pass
+
 def run_edgar_pipeline(
     ticker,
     year,
@@ -762,7 +766,7 @@ def run_edgar_pipeline(
         filtered_10qs = [q for q in accessions_10q if q.get("label") == target_label]
         
         if not filtered_10qs:
-           raise ValueError(f"❌ No 10-Q filing found for {target_label}. This quarter may not have been filed yet.")
+           raise FilingNotFoundError(f"❌ No 10-Q filing found for {target_label}. This quarter may not have been filed yet.")
     
     
     # In[99]:
@@ -919,7 +923,7 @@ def run_edgar_pipeline(
         filtered_10ks = [k for k in accessions_10k if k.get("year") == YEAR]
     
         if not filtered_10ks:
-            raise ValueError(f"❌ No matching 10-K found for {YEAR}. It may not have been filed yet.")    
+            raise FilingNotFoundError(f"❌ No matching 10-K found for {YEAR}. It may not have been filed yet.")    
     
     
     # In[101]:
@@ -1567,7 +1571,7 @@ def run_edgar_pipeline(
         
         if not filtered_10qs:
             target_10q = None
-            raise ValueError(f"❌ No 10-Q filing found for {target_label}. This quarter may not have been filed yet.")
+            raise FilingNotFoundError(f"❌ No 10-Q filing found for {target_label}. This quarter may not have been filed yet.")
             
         else:
             target_10q = filtered_10qs[0]
@@ -1599,7 +1603,7 @@ def run_edgar_pipeline(
         filtered_10ks = [k for k in results_10k if k.get("year") == YEAR]
         
         if not filtered_10ks:
-            raise ValueError(f"❌ No matching 10-K found for {YEAR}. It may not have been filed yet.")
+            raise FilingNotFoundError(f"❌ No matching 10-K found for {YEAR}. It may not have been filed yet.")
     
         target_10k = filtered_10ks[0]
         print(f"Selected 10-K for full year: Period-End: {target_10k['document_period_end']}")
@@ -1641,13 +1645,13 @@ def run_edgar_pipeline(
                 print(f"   -{q}: Period End: {entry['document_period_end']} | {entry['url']}")
     
         if not q3_entry:
-            raise ValueError("❌ Missing current year Q3 10-Q — required for 4Q processing.")
+            raise FilingNotFoundError("❌ Missing current year Q3 10-Q — required for 4Q processing.")
         
         # Select prior year 10-K - this may be redundant - used in next step
         prior_10k = next((k for k in results_10k if k.get("year") == YEAR - 1), None)
         
         if not prior_10k and not FULL_YEAR_MODE:
-            raise ValueError(f"❌ No matching 10-K found for {YEAR} — required for prior 4Q calculation.")
+            raise FilingNotFoundError(f"❌ No matching 10-K found for {YEAR} — required for prior 4Q calculation.")
     
         elif not prior_10k and FULL_YEAR_MODE:
             print(f"⚠️ Missing prior year 10-K for {YEAR - 1}, but continuing to process filing.")

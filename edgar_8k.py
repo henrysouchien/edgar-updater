@@ -575,12 +575,18 @@ def get_financials_from_8k(ticker, year, quarter, full_year_mode=False, use_cach
     result = {
         "status": "success",
         "metadata": {
+            "ticker": ticker,
+            "year": year,
+            "quarter": quarter,
+            "full_year_mode": full_year_mode,
             "total_facts": len(facts),
             "source": {
                 "filing_type": "8-K",
                 "period_end": expected_period_end or entry.get("filing_date"),
                 "url": exhibit_url,
                 "value_scale": value_scale,
+                "cik": cik,
+                "accession": entry["accession"],
             },
         },
         "facts": facts,
