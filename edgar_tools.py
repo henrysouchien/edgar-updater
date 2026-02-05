@@ -1,5 +1,6 @@
 """Tool wrappers for EDGAR pipeline."""
 
+import os
 from collections import defaultdict
 
 import requests
@@ -7,6 +8,26 @@ import requests
 from config import HEADERS, N_10K, N_10Q
 from edgar_pipeline import run_edgar_pipeline, FilingNotFoundError
 from utils import lookup_cik_from_ticker, parse_date
+
+
+# === Ticker validation ===
+# Load valid tickers once at module load to fail fast on invalid tickers
+_VALID_TICKERS = set()
+_tickers_file = os.path.join(os.path.dirname(__file__), "valid_tickers.csv")
+if os.path.exists(_tickers_file):
+    with open(_tickers_file, "r") as f:
+        for line in f.readlines()[1:]:  # Skip header
+            _VALID_TICKERS.add(line.strip().upper())
+
+
+def _validate_ticker(ticker: str) -> str | None:
+    """Return error message if ticker is invalid, else None."""
+    if not ticker:
+        return "Missing required parameter: ticker"
+    ticker_upper = ticker.strip().upper()
+    if _VALID_TICKERS and ticker_upper not in _VALID_TICKERS:
+        return f"Invalid or unsupported ticker: {ticker}"
+    return None
 
 
 # NOTE: XBRL tag names are not standardized across companies. The same concept
@@ -229,6 +250,10 @@ def get_filings(ticker: str, year: int, quarter: int) -> dict:
     """
     Fetch SEC filing metadata for a company/period.
     """
+    # Validate ticker first to fail fast
+    if err := _validate_ticker(ticker):
+        return {"status": "error", "message": err}
+
     cik = lookup_cik_from_ticker(ticker)
     if not cik:
         return {"status": "error", "message": f"Could not find CIK for {ticker}"}
@@ -319,6 +344,10 @@ def get_financials(
     """
     Extract all financial facts from SEC filings.
     """
+    # Validate ticker first to fail fast
+    if err := _validate_ticker(ticker):
+        return {"status": "error", "message": err}
+
     # Normalize source param: accept "8K", "8-K", "8k", etc.
     if source:
         source = source.strip().lower().replace("-", "")
