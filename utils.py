@@ -177,6 +177,7 @@ PREFIX_MAP = {
     "axis_geo": "current_axis_geo",
     "axis_legal_entity": "current_axis_legal_entity",
     "axis_unassigned": "current_axis_unassigned",
+    "scale": "current_scale",
 }
 
 FINAL_COLS = [
@@ -184,7 +185,8 @@ FINAL_COLS = [
     *AXIS_COLS,
     "start_current", "end_current", "current_period_value", "contextref_current",
     "start_prior", "end_prior", "prior_period_value", "contextref_prior",
-    "presentation_role"
+    "presentation_role",
+    "scale"
 ]
 
 
@@ -464,9 +466,17 @@ def standardize_zip_output(df):
     # Step 1: Rename using prefix_map
     rename_map = {v: k for k, v in prefix_map.items() if v in df.columns}
     missing = [v for k, v in prefix_map.items() if v not in df.columns]
-    
+
     #if missing:
         #print(f"⚠️ Skipped missing columns during rename: {missing}")
+
+    # Guard: if both source and target of a rename exist (e.g. after concat),
+    # coalesce them to avoid duplicate column names
+    for source, target in list(rename_map.items()):
+        if target in df.columns:
+            df[target] = df[target].fillna(df[source])
+            df = df.drop(columns=[source])
+            del rename_map[source]
 
     df = df.rename(columns=rename_map)
 
@@ -477,7 +487,12 @@ def standardize_zip_output(df):
 
     # Step 3: Reorder to have FINAL_COLS first, preserve any extra cols after
     ordered_cols = final_cols + [c for c in df.columns if c not in final_cols]
-    return df[ordered_cols]
+    df = df[ordered_cols]
+
+    if "prior_scale" in df.columns:
+        df = df.drop(columns=["prior_scale"])
+
+    return df
 
 
 # In[11]:
@@ -525,7 +540,6 @@ def parse_date(date_input):
 
 
 # In[ ]:
-
 
 
 

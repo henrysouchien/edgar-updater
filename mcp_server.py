@@ -41,7 +41,8 @@ async def list_tools():
             name="get_financials",
             description=(
                 "Extract all financial facts from SEC filings. Returns structured JSON with income "
-                "statement, balance sheet, and cash flow data."
+                "statement, balance sheet, and cash flow data. Each fact includes a 'scale' field "
+                "(e.g., 'millions', 'thousands', 'units') indicating the unit scale of the values."
             ),
             inputSchema={
                 "type": "object",
@@ -69,7 +70,9 @@ async def list_tools():
             description=(
                 "Get a specific financial metric. Supports common names like 'revenue', "
                 "'net_income', 'eps', 'gross_profit', 'operating_income', 'cash', 'total_assets', "
-                "'total_debt'."
+                "'total_debt'. Returns current/prior values with YoY change. Includes 'scale' "
+                "field -- multiply displayed value by scale to get actual dollars "
+                "(e.g., revenue=6800, scale='millions' means $6.8B)."
             ),
             inputSchema={
                 "type": "object",

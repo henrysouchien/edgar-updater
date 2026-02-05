@@ -542,6 +542,7 @@ def get_metric_from_result(
             "yoy_change": yoy_change,
             "yoy_change_pct": f"{yoy_pct}%" if yoy_pct is not None else None,
             "date_type": fact.get("date_type"),
+            "scale": fact.get("scale"),
         })
 
     return {

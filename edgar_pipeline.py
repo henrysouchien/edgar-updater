@@ -399,6 +399,7 @@ def run_edgar_pipeline(
                 "tag": tag,
                 "value": value,
                 "contextref": ctx,
+                "scale": fact.get("scale"),
                 "period_type": period_info[0],
                 "matched_category": None,
                 "start": None,
@@ -1113,7 +1114,15 @@ def run_edgar_pipeline(
     
     # === CONFIG ===
     STOP_AFTER_FIRST_VALID_PERIOD = True
-    
+
+    def _safe_int(val):
+        if val is None:
+            return None
+        try:
+            return int(float(val))
+        except (ValueError, TypeError):
+            return None
+
     # === Extract facts and DocumentPeriodEndDate from a single .htm ===
     def extract_facts_with_document_period(ixbrl_url, headers):
     
@@ -1191,6 +1200,7 @@ def run_edgar_pipeline(
             name = tag.get("name")
             ctx = tag.get("contextref")
             sign = tag.get("sign")
+            scale = tag.get("scale")
             val = tag.text or tag.get("value") or "".join(tag.stripped_strings)
     
             if not (name and ctx and val):
@@ -1211,7 +1221,8 @@ def run_edgar_pipeline(
                 "tag": name,
                 "contextref": ctx,
                 "value": value,
-                "text": tag.text.strip()
+                "text": tag.text.strip(),
+                "scale": _safe_int(scale)
             })
     
         return {
@@ -2125,7 +2136,8 @@ def run_edgar_pipeline(
         df_4q_output["prior_end"] = pd.NaT
         df_4q_output["prior_period_value"] = df_merged["prior_period_value_current"]
         df_4q_output["contextref_prior"] = None
-    
+        df_4q_output["current_scale"] = df_merged.get("scale", df_merged.get("current_scale"))
+
         # === Standardize for downstream compatability
         df_4q_output = standardize_zip_output(df_4q_output)
     
@@ -2203,6 +2215,7 @@ def run_edgar_pipeline(
                         "contextref_current": None,
                         "contextref_prior": None,
                         "presentation_role": row_fy["presentation_role"],
+                        "scale": row_fy.get("scale"),
                         **{col: row_fy[col] for col in AXIS_COLS},
                         "_key": None  # optional: kept here as placeholder
                     })
@@ -2312,8 +2325,8 @@ def run_edgar_pipeline(
         MIN_KEYS = ["tag"]
     
         # === Trim
-        df_curr_inst_trim = df_curr_inst[MATCH_COLS + ["value", "contextref", "date_type"]].copy()
-        df_prior_inst_trim = df_prior_inst[MATCH_COLS + ["value", "contextref", "date_type"]].copy()
+        df_curr_inst_trim = df_curr_inst[MATCH_COLS + ["value", "contextref", "date_type", "scale"]].copy()
+        df_prior_inst_trim = df_prior_inst[MATCH_COLS + ["value", "contextref", "date_type", "scale"]].copy()
     
         # === Drop duplicates
         df_curr_inst_trim = df_curr_inst_trim.drop_duplicates()
@@ -2410,8 +2423,8 @@ def run_edgar_pipeline(
         MIN_KEYS = ["tag"]
     
         # === Trim
-        df_fy_curr_trim = df_fy_curr[MATCH_COLS + ["start", "end", "value", "contextref", "date_type"]].copy()
-        df_fy_prior_trim = df_fy_prior[MATCH_COLS + ["start", "end", "value", "contextref", "date_type"]].copy()
+        df_fy_curr_trim = df_fy_curr[MATCH_COLS + ["start", "end", "value", "contextref", "date_type", "scale"]].copy()
+        df_fy_prior_trim = df_fy_prior[MATCH_COLS + ["start", "end", "value", "contextref", "date_type", "scale"]].copy()
     
         # === Adaptive match
         match_keys = run_adaptive_match_keys(df_fy_curr_trim, df_fy_prior_trim, MATCH_COLS, MIN_KEYS)
@@ -2541,8 +2554,8 @@ def run_edgar_pipeline(
             df_prior_q[col] = df_prior_q[col].fillna("__NONE__")
         
         # Step 2: Trim to needed columns
-        df_curr_trim = df_curr_q[MATCH_COLS + ["start", "end", "value", "contextref", "presentation_role"]].copy()
-        df_prior_trim = df_prior_q[MATCH_COLS + ["start", "end", "value", "contextref", "presentation_role"]].copy()
+        df_curr_trim = df_curr_q[MATCH_COLS + ["start", "end", "value", "contextref", "presentation_role", "scale"]].copy()
+        df_prior_trim = df_prior_q[MATCH_COLS + ["start", "end", "value", "contextref", "presentation_role", "scale"]].copy()
     
         # === DIAGNOSTIC: Count duplicate match groups
         curr_group_sizes = df_curr_trim.groupby(MATCH_COLS).size()
@@ -2626,8 +2639,8 @@ def run_edgar_pipeline(
         df_ytd_prior = df_prior[df_prior["matched_category"] == "current_ytd"].copy()  # Prior Q stores prior YTD as "current_ytd"
         
         # Trim to match keys + data
-        df_ytd_curr_trim = df_ytd_curr[MATCH_COLS_YTD + ["start", "end", "value", "contextref", "presentation_role"]].copy()
-        df_ytd_prior_trim = df_ytd_prior[MATCH_COLS_YTD + ["start", "end", "value", "contextref", "presentation_role"]].copy()
+        df_ytd_curr_trim = df_ytd_curr[MATCH_COLS_YTD + ["start", "end", "value", "contextref", "presentation_role", "scale"]].copy()
+        df_ytd_prior_trim = df_ytd_prior[MATCH_COLS_YTD + ["start", "end", "value", "contextref", "presentation_role", "scale"]].copy()
         
         # === DIAGNOSTIC: Count duplicate match groups
         curr_ytd_group_sizes = df_ytd_curr_trim.groupby(MATCH_COLS_YTD).size()
@@ -2673,8 +2686,8 @@ def run_edgar_pipeline(
         )
     
         #Create two match groups for sequential match
-        df_instant_curr_trim = df_instant_curr[MATCH_COLS_INSTANT + ["value", "contextref"]].copy()
-        df_instant_prior_trim = df_instant_prior[MATCH_COLS_INSTANT + ["value", "contextref"]].copy()
+        df_instant_curr_trim = df_instant_curr[MATCH_COLS_INSTANT + ["value", "contextref", "scale"]].copy()
+        df_instant_prior_trim = df_instant_prior[MATCH_COLS_INSTANT + ["value", "contextref", "scale"]].copy()
     
         # === DIAGNOSTIC: Count how many match groups have duplicate rows
         
@@ -3250,9 +3263,12 @@ def run_edgar_pipeline(
         sheet = wb["Raw_data"]
 
         # === Clear old data (optional, but safe to do)
-        for row in sheet["A2:E5000"]:
+        for row in sheet["A2:F5000"]:
             for cell in row:
                 cell.value = None
+
+        # === Write header for scale column
+        sheet["F1"] = "Scale"
 
         # === Write metadata in columns G–H (optional)
         sheet["G1"] = "Ticker"
@@ -3271,6 +3287,9 @@ def run_edgar_pipeline(
             sheet.cell(row=idx+2, column=3, value=row.get("visual_prior_value", row.get("prior_period_value")))
             sheet.cell(row=idx+2, column=4, value=row.get("presentation_role", ""))  # Presentation information
             sheet.cell(row=idx+2, column=5, value=row.get("collision_flag", 0))      # Collision flag
+            raw_scale = row.get("scale")
+            scale_label = {-2: "hundredths", 0: "units", 3: "thousands", 6: "millions", 9: "billions"}.get(int(raw_scale), f"10^{int(raw_scale)}") if pd.notna(raw_scale) else None
+            sheet.cell(row=idx+2, column=6, value=scale_label)
 
         # === Save the workbook to export folder
         wb.save(export_updater_path)
@@ -3423,7 +3442,7 @@ def run_edgar_pipeline(
         # Copy raw values from original sheet
         data_row_count = len(export_df)
 
-        for row in sheet.iter_rows(min_row=1, max_row=data_row_count + 1, max_col=5):
+        for row in sheet.iter_rows(min_row=1, max_row=data_row_count + 1, max_col=6):
             for cell in row:
                 sheet_clean.cell(row=cell.row, column=cell.column, value=cell.value)
 
@@ -3439,15 +3458,38 @@ def run_edgar_pipeline(
 
     # === Return JSON-serializable dict if requested (for /api/financials) ===
     if return_json:
+        from collections import Counter
+        SCALE_LABELS = {-2: "hundredths", 0: "units", 3: "thousands", 6: "millions", 9: "billions"}
+
+        if "scale" in export_df.columns:
+            all_scales = export_df["scale"].dropna()
+            if len(all_scales) == 0:
+                value_scale = "unknown"
+            else:
+                nonzero_scales = all_scales[all_scales != 0]
+                if len(nonzero_scales) > 0:
+                    dominant_scale = int(Counter(nonzero_scales.astype(int)).most_common(1)[0][0])
+                    value_scale = SCALE_LABELS.get(dominant_scale, f"10^{dominant_scale}")
+                else:
+                    value_scale = "units"
+        else:
+            value_scale = "unknown"
+
         # Filter to essential columns for API consumption
         API_COLUMNS = [
             "tag", "date_type", "presentation_role",
             "current_period_value", "prior_period_value",
             "visual_current_value", "visual_prior_value",
             "end_current", "end_prior",  # TODO: investigate end_prior inconsistency (sometimes matches end_current)
-            "axis_segment", "axis_geo", "collision_flag"
+            "axis_segment", "axis_geo", "collision_flag",
+            "scale"
         ]
         api_df = export_df[[col for col in API_COLUMNS if col in export_df.columns]].copy()
+
+        if "scale" in api_df.columns:
+            api_df["scale"] = api_df["scale"].apply(
+                lambda x: SCALE_LABELS.get(int(x), f"10^{int(x)}") if pd.notna(x) else None
+            )
 
         # Convert numpy types to native Python for JSON serialization
         for col in api_df.select_dtypes(include=['int64', 'float64']).columns:
@@ -3472,7 +3514,8 @@ def run_edgar_pipeline(
                 "source": {
                     "filing_type": "10-K" if FOUR_Q_MODE else "10-Q",
                     "period_end": target_10k["document_period_end"] if FOUR_Q_MODE else target_10q["document_period_end"],
-                    "url": target_10k["url"] if FOUR_Q_MODE else target_10q["url"]
+                    "url": target_10k["url"] if FOUR_Q_MODE else target_10q["url"],
+                    "value_scale": value_scale
                 }
             },
             "facts": facts

@@ -389,6 +389,12 @@ Output a JSON array where each item has:
   - "Q" -- single quarter (e.g., "three months ended"). Balance sheet items ("as of" a date) ALWAYS use "Q" regardless of the date.
   - "YTD" -- year-to-date or cumulative (e.g., "nine months ended")
   - "FY" -- full fiscal year (e.g., "twelve months ended" or annual)
+- "scale": integer power of 10 representing the unit scale of the values.
+  Use 0 for actual values (e.g., per-share data, ratios, counts),
+  3 for thousands, 6 for millions, 9 for billions.
+  Look for cues like "in millions, except per share data" in table
+  headers or filing text. Per-share items (EPS, dividends per share)
+  are always scale 0.
 
 Numbers in parentheses are negative. Strip commas but don't apply any
 scale factor. Use null for missing values.
@@ -491,6 +497,7 @@ def _coerce_numeric(val):
 
 
 VALID_DATE_TYPES = {"Q", "YTD", "FY"}
+SCALE_LABELS = {-2: "hundredths", 0: "units", 3: "thousands", 6: "millions", 9: "billions"}
 
 
 def _postprocess_facts(raw_facts):
@@ -502,6 +509,13 @@ def _postprocess_facts(raw_facts):
         raw_dt = item.get("date_type")
         date_type = raw_dt.upper().strip() if isinstance(raw_dt, str) else None
         date_type = date_type if date_type in VALID_DATE_TYPES else None
+        raw_scale = item.get("scale")
+        try:
+            scale_int = int(float(raw_scale)) if raw_scale is not None else None
+        except (ValueError, TypeError):
+            scale_int = None
+        scale_int = scale_int if scale_int in (-2, 0, 3, 6, 9) else None
+        scale = SCALE_LABELS.get(scale_int) if scale_int is not None else None
         facts.append(
             {
                 "tag": item.get("tag"),
@@ -516,6 +530,7 @@ def _postprocess_facts(raw_facts):
                 "axis_segment": None,
                 "axis_geo": None,
                 "collision_flag": 0,  # computed below
+                "scale": scale,
             }
         )
 
@@ -550,7 +565,10 @@ def get_financials_from_8k(ticker, year, quarter, full_year_mode=False, use_cach
     # This is intentionally redundant so CLI calls (which bypass Flask) also get caching.
     if use_cache and os.path.exists(cache_path):
         with open(cache_path, "r") as f:
-            return json.load(f)
+            cached = json.load(f)
+        facts = cached.get("facts", [])
+        if facts and "scale" in facts[0]:
+            return cached
 
     # === 2. CIK lookup ===
     cik = lookup_cik_from_ticker(ticker)
@@ -608,9 +626,12 @@ def write_8k_facts_to_excel(facts, ticker, year, quarter, full_year_mode, excel_
     sheet = wb["Raw_data"]
 
     # Clear existing data
-    for row in sheet["A2:E5000"]:
+    for row in sheet["A2:F5000"]:
         for cell in row:
             cell.value = None
+
+    # Write header for scale column
+    sheet["F1"] = "Scale"
 
     # Write facts
     for i, fact in enumerate(facts):
@@ -628,6 +649,7 @@ def write_8k_facts_to_excel(facts, ticker, year, quarter, full_year_mode, excel_
         )
         sheet.cell(row=row_num, column=4, value=fact.get("presentation_role", ""))
         sheet.cell(row=row_num, column=5, value=fact.get("collision_flag", 0))
+        sheet.cell(row=row_num, column=6, value=fact.get("scale"))
 
     # Write metadata
     sheet["G1"] = "Ticker"
