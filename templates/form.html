@@ -158,6 +158,7 @@
             Processing your request<span class="loading-dot"></span>
         </div>
         <div style="color: #6c757d; font-size: 14px;">This usually takes a minute or two. If the filing is large or complex, it may take longer.</div>
+        <div id="extended-wait-message" style="display:none; margin-top: 10px; color: #6c757d; font-size: 14px;">Still working — checking the latest filings for data...</div>
     </div>
 
     <!-- Display result below -->
@@ -263,6 +264,10 @@
             if (successMessage) {
                 successMessage.style.display = 'none';
             }
+            // Show extended wait message after 30 seconds
+            setTimeout(function() {
+                document.getElementById('extended-wait-message').style.display = 'block';
+            }, 30000);
         });
 
         // Function to convert URLs to clickable links
