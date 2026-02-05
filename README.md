@@ -90,7 +90,7 @@ Edgar_updater/
 ├── update_remote.sh           # Remote update script
 ├── backup.sh                  # Backup script
 ├── install_redis.sh           # Redis installation script
-├── monitor_usage.py           # Usage monitoring
+├── monitor_usage.py           # Usage monitoring (11-section analytics report)
 ├── generate_api_key.py        # API key generation
 ├── valid_tickers.csv          # Valid stock tickers list
 ├── sp500_tickers.csv          # S&P 500 tickers list
@@ -336,7 +336,7 @@ When a 10-Q/10-K filing isn't available yet (common for recent quarters), `/api/
 
 | Tier | Limit | Description |
 |------|-------|-------------|
-| Public | 2 per 7 days | No API key required |
+| Public | 5 per 7 days | No API key required |
 | Registered | 6 per 7 days | Free API key |
 | Paid | 500 per 7 days | Paid API key |
 
