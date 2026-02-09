@@ -1,11 +1,12 @@
 """Tool wrappers for EDGAR pipeline."""
 
 import os
+import time
 from collections import defaultdict
 
 import requests
 
-from config import HEADERS, N_10K, N_10Q
+from config import HEADERS, REQUEST_DELAY, N_10K, N_10Q
 from edgar_pipeline import run_edgar_pipeline, FilingNotFoundError
 from utils import lookup_cik_from_ticker, parse_date
 
@@ -244,6 +245,59 @@ def build_filing_url(cik: str, accession: str) -> str:
         f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/"
         f"{acc_nodash}/{accession}-index.html"
     )
+
+
+def fetch_filing_htm(cik: str, accession: str) -> tuple[bytes, str]:
+    """
+    Fetch the main .htm file from an SEC filing accession.
+
+    Uses the same strategy as try_all_htm_files(): fetch index.json,
+    sort .htm files by size descending, download the largest one.
+    Falls back to next-largest if download fails.
+
+    Args:
+        cik: SEC Central Index Key (e.g., "0000320193"). Will be cast to int
+             to strip leading zeros for URL construction.
+        accession: SEC accession number (e.g., "0000320193-23-000055").
+
+    Returns:
+        (html_bytes, htm_url) -- raw HTML content and the URL it came from.
+
+    Raises:
+        ValueError: if no valid .htm file found in the accession.
+    """
+    acc_nodash = accession.replace("-", "")
+    index_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_nodash}/index.json"
+    base_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{acc_nodash}/"
+
+    r = requests.get(index_url, headers=HEADERS)
+    time.sleep(REQUEST_DELAY)
+    r.raise_for_status()
+
+    items = r.json().get("directory", {}).get("item", [])
+    sized = []
+    unsized = []
+
+    for item in items:
+        name = item.get("name", "")
+        if not name.lower().endswith(".htm"):
+            continue
+        if item.get("size", "").isdigit():
+            sized.append(item)
+        else:
+            unsized.append(item)
+
+    sized.sort(key=lambda x: int(x["size"]), reverse=True)
+    candidates = sized + unsized
+
+    for item in candidates:
+        url = base_url + item["name"]
+        resp = requests.get(url, headers=HEADERS)
+        time.sleep(REQUEST_DELAY)
+        if resp.ok and len(resp.content) > 10_000:
+            return resp.content, url
+
+    raise ValueError(f"No valid .htm file found in {accession}")
 
 
 def get_filings(ticker: str, year: int, quarter: int) -> dict:
@@ -605,3 +659,43 @@ def get_metric(
         full_year_mode,
         date_type=date_type,
     )
+
+
+def get_filing_sections(
+    ticker: str,
+    year: int,
+    quarter: int,
+    sections: list[str] | None = None,
+    format: str = "summary",
+    max_words: int | None = 3000,
+) -> dict:
+    """
+    Parse qualitative sections from SEC 10-K or 10-Q filings.
+
+    This is the public API entry point. Validates ticker, then delegates
+    to section_parser.get_filing_sections_cached().
+
+    Defaults to format="summary" (metadata only: section names, word counts,
+    filing type). Use format="full" with a sections filter to get text content.
+
+    Returns structured dict with section text, tables, and word counts.
+    """
+    if err := _validate_ticker(ticker):
+        return {"status": "error", "message": err}
+
+    try:
+        from section_parser import get_filing_sections_cached
+
+        result = get_filing_sections_cached(
+            ticker,
+            year,
+            quarter,
+            sections,
+            format=format,
+            max_words=max_words,
+        )
+        return {"status": "success", **result}
+    except ValueError as e:
+        return {"status": "error", "message": str(e)}
+    except Exception as e:
+        return {"status": "error", "message": f"Section parsing failed: {str(e)}"}

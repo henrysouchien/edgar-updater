@@ -10,7 +10,7 @@ from mcp.server import InitializationOptions, Server
 from mcp.server.stdio import stdio_server
 from mcp.types import ServerCapabilities, TextContent, Tool
 
-from edgar_tools import get_filings, get_financials, get_metric
+from edgar_tools import get_filings, get_financials, get_metric, get_filing_sections
 
 server = Server("edgar-financials")
 
@@ -104,6 +104,69 @@ async def list_tools():
                 "required": ["ticker", "year", "quarter", "metric_name"],
             },
         ),
+        Tool(
+            name="get_filing_sections",
+            description=(
+                "Parse qualitative sections from SEC 10-K or 10-Q filings. "
+                "Returns narrative text (Risk Factors, MD&A, Business Description, etc.) "
+                "with clean text, embedded tables, and word counts.\n\n"
+                "Recommended workflow:\n"
+                "1. Call with default format='summary' to see available sections and word counts.\n"
+                "2. Identify the section(s) you need.\n"
+                "3. Call again with format='full' and sections=['item_7'] to get text for specific sections.\n\n"
+                "Defaults to summary mode (metadata only - no text content). "
+                "Full text is truncated to max_words (default 3000) per section. "
+                "If format='full' is used without a sections filter, returns a preview (~500 words per section) "
+                "to avoid overwhelming context.\n\n"
+                "10-K sections: item_1 (Business), item_1a (Risk Factors), item_7 (MD&A), etc. "
+                "10-Q sections: part1_item2 (MD&A), part2_item1a (Risk Factors), etc."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {
+                        "type": "string",
+                        "description": "Stock ticker symbol (e.g., AAPL)",
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Fiscal year (e.g., 2024)",
+                    },
+                    "quarter": {
+                        "type": "integer",
+                        "description": "Quarter 1-4",
+                    },
+                    "sections": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional list of section keys to return. "
+                            "If omitted, returns all sections. "
+                            "10-K keys: item_1, item_1a, item_1b, item_2, item_3, item_7, item_7a, item_8. "
+                            "10-Q keys: part1_item1, part1_item2, part1_item3, part1_item4, part2_item1, part2_item1a."
+                        ),
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["summary", "full"],
+                        "description": (
+                            "Output format. 'summary' (default) returns metadata only: "
+                            "section names, word counts, filing type - no text content. "
+                            "'full' returns section text, subject to max_words truncation."
+                        ),
+                    },
+                    "max_words": {
+                        "type": ["integer", "null"],
+                        "description": (
+                            "Max words per section text field (default 3000). "
+                            "Only applies when format='full'. "
+                            "Set to null for unlimited (use with caution - large sections can exceed 10K words)."
+                        ),
+                    },
+                },
+                "required": ["ticker", "year", "quarter"],
+            },
+        ),
     ]
 
 
@@ -132,6 +195,15 @@ async def call_tool(name: str, arguments: dict):
             full_year_mode=arguments.get("full_year_mode", False),
             source=arguments.get("source", "auto"),
             date_type=arguments.get("date_type"),
+        )
+    elif name == "get_filing_sections":
+        result = get_filing_sections(
+            ticker=arguments["ticker"],
+            year=arguments["year"],
+            quarter=arguments["quarter"],
+            sections=arguments.get("sections"),
+            format=arguments.get("format", "summary"),
+            max_words=arguments.get("max_words", 3000),
         )
     else:
         result = {"status": "error", "message": f"Unknown tool: {name}"}

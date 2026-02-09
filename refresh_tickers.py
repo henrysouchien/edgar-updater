@@ -93,14 +93,15 @@ def download_ticker_map() -> dict:
     data = response.json()
     print(f"Loaded {len(data)} entries from SEC ticker map")
 
-    # Build CIK -> ticker lookup
-    cik_to_ticker = {}
+    # Build CIK -> tickers lookup (one CIK can have multiple tickers,
+    # e.g. JPM common stock + preferred shares + ETF products)
+    cik_to_tickers = {}
     for entry in data.values():
         cik = str(entry["cik_str"]).zfill(10)
         ticker = entry["ticker"]
-        cik_to_ticker[cik] = ticker
+        cik_to_tickers.setdefault(cik, []).append(ticker)
 
-    return cik_to_ticker
+    return cik_to_tickers
 
 
 def refresh_tickers(year: int = None, quarter: str = None):
@@ -117,14 +118,13 @@ def refresh_tickers(year: int = None, quarter: str = None):
     valid_ciks = download_master_index(year, quarter)
 
     # Step 2: Map CIKs to tickers
-    cik_to_ticker = download_ticker_map()
+    cik_to_tickers = download_ticker_map()
 
     # Step 3: Get tickers for valid CIKs
     valid_tickers = set()
     for cik in valid_ciks:
-        ticker = cik_to_ticker.get(cik)
-        if ticker:
-            valid_tickers.add(ticker)
+        tickers = cik_to_tickers.get(cik, [])
+        valid_tickers.update(tickers)
 
     print(f"Matched {len(valid_tickers)} tickers")
 
