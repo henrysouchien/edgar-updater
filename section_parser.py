@@ -45,6 +45,25 @@ SECTIONS_10Q = {
 SECTION_ORDER_10K = ["item_1", "item_1a", "item_1b", "item_2", "item_3", "item_7", "item_7a", "item_8"]
 SECTION_ORDER_10Q = ["part1_item1", "part1_item2", "part1_item3", "part1_item4", "part2_item1", "part2_item1a"]
 
+# Canonical header names — used instead of raw HTML text which may contain
+# anti-scraping spaces (e.g. "FINANCI AL" instead of "FINANCIAL").
+_CANONICAL_HEADERS = {
+    "item_1": "Item 1. Business",
+    "item_1a": "Item 1A. Risk Factors",
+    "item_1b": "Item 1B. Unresolved Staff Comments",
+    "item_2": "Item 2. Properties",
+    "item_3": "Item 3. Legal Proceedings",
+    "item_7": "Item 7. Management's Discussion and Analysis of Financial Condition and Results of Operations",
+    "item_7a": "Item 7A. Quantitative and Qualitative Disclosures About Market Risk",
+    "item_8": "Item 8. Financial Statements and Supplementary Data",
+    "part1_item1": "Part I, Item 1. Financial Statements",
+    "part1_item2": "Part I, Item 2. Management's Discussion and Analysis of Financial Condition and Results of Operations",
+    "part1_item3": "Part I, Item 3. Quantitative and Qualitative Disclosures About Market Risk",
+    "part1_item4": "Part I, Item 4. Controls and Procedures",
+    "part2_item1": "Part II, Item 1. Legal Proceedings",
+    "part2_item1a": "Part II, Item 1A. Risk Factors",
+}
+
 _BODY_REF_PREFIXES = (
     "see ",
     "refer to ",
@@ -278,7 +297,7 @@ def extract_section_content(soup: BeautifulSoup, headers: list[dict], section_or
         text = _html_to_text(top_level_tags, include_tables=False)
         word_count = len(text.split())
         section_data[header["key"]] = {
-            "header": header["header_text"],
+            "header": _CANONICAL_HEADERS.get(header["key"], header["header_text"]),
             "text": text,
             "tables": tables,
             "word_count": word_count,
