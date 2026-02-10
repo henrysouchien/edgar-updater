@@ -95,39 +95,108 @@ METRIC_ALIASES = {
 
 
 def fetch_recent_10q_10k_accessions(cik: str, headers: dict):
-    url = f"https://data.sec.gov/submissions/CIK{cik.zfill(10)}.json"
+    def _extract_submission_arrays(payload: dict, source: str) -> tuple[list, list, list, list]:
+        # Main submissions endpoint nests arrays under filings.recent.
+        # Overflow archive files expose the same arrays at top level.
+        filings = payload.get("filings", {}).get("recent")
+        if filings is None:
+            filings = payload
+
+        required_keys = ["form", "accessionNumber", "reportDate"]
+        if not all(k in filings for k in required_keys):
+            raise ValueError(
+                f"SEC filings JSON missing expected fields (form, accessionNumber, reportDate) in {source}."
+            )
+
+        forms = filings["form"]
+        accessions = filings["accessionNumber"]
+        report_dates = filings["reportDate"]
+        filing_dates = filings.get("filingDate", [None] * len(forms))
+        return forms, accessions, report_dates, filing_dates
+
+    def _scan_payload_for_10q_10k(
+        payload: dict,
+        source: str,
+        accessions_10q: list,
+        accessions_10k: list,
+        seen_accessions: set,
+    ) -> None:
+        forms, accessions, report_dates, filing_dates = _extract_submission_arrays(payload, source)
+
+        for i, form in enumerate(forms):
+            accession = accessions[i]
+            if accession in seen_accessions:
+                continue
+
+            if form not in ("10-Q", "10-K"):
+                continue
+
+            seen_accessions.add(accession)
+            entry = {
+                "accession": accession,
+                "report_date": report_dates[i],
+                "filing_date": filing_dates[i],
+                "form": form,
+            }
+
+            if form == "10-Q":
+                accessions_10q.append(entry)
+            else:
+                accessions_10k.append(entry)
+
+    def _overflow_file_url(cik_value: str, file_name: str) -> str:
+        cik_10 = cik_value.zfill(10)
+        if file_name.startswith("http://") or file_name.startswith("https://"):
+            return file_name
+        if file_name.startswith("CIK"):
+            return f"https://data.sec.gov/submissions/{file_name}"
+        if file_name.startswith("submissions-"):
+            return f"https://data.sec.gov/submissions/CIK{cik_10}-{file_name}"
+        return f"https://data.sec.gov/submissions/{file_name}"
+
+    cik_padded = cik.zfill(10)
+    url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
     r = requests.get(url, headers=headers)
     r.raise_for_status()
     data = r.json()
 
-    filings = data["filings"]["recent"]
-
-    required_keys = ["form", "accessionNumber", "reportDate"]
-    if not all(k in filings for k in required_keys):
-        raise ValueError(
-            "SEC filings JSON missing expected fields (form, accessionNumber, reportDate)."
-        )
-
-    forms = filings["form"]
-    accessions = filings["accessionNumber"]
-    report_dates = filings["reportDate"]
-    filing_dates = filings.get("filingDate", [None] * len(forms))
-
     accessions_10q = []
     accessions_10k = []
+    seen_accessions = set()
 
-    for i, form in enumerate(forms):
-        entry = {
-            "accession": accessions[i],
-            "report_date": report_dates[i],
-            "filing_date": filing_dates[i],
-            "form": form,
-        }
+    _scan_payload_for_10q_10k(
+        payload=data,
+        source=f"CIK{cik_padded}.json",
+        accessions_10q=accessions_10q,
+        accessions_10k=accessions_10k,
+        seen_accessions=seen_accessions,
+    )
 
-        if form == "10-Q":
-            accessions_10q.append(entry)
-        elif form == "10-K":
-            accessions_10k.append(entry)
+    # High-volume filers may have older submissions split into overflow files.
+    if len(accessions_10q) < N_10Q or len(accessions_10k) < N_10K:
+        overflow_files = data.get("filings", {}).get("files", [])
+        for file_meta in overflow_files:
+            if len(accessions_10q) >= N_10Q and len(accessions_10k) >= N_10K:
+                break
+
+            file_name = file_meta.get("name")
+            if not file_name:
+                continue
+
+            overflow_url = _overflow_file_url(cik, file_name)
+            overflow_resp = requests.get(overflow_url, headers=headers)
+            overflow_resp.raise_for_status()
+            overflow_data = overflow_resp.json()
+
+            _scan_payload_for_10q_10k(
+                payload=overflow_data,
+                source=file_name,
+                accessions_10q=accessions_10q,
+                accessions_10k=accessions_10k,
+                seen_accessions=seen_accessions,
+            )
+
+            time.sleep(REQUEST_DELAY)
 
     return accessions_10q, accessions_10k
 
