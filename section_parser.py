@@ -1,8 +1,11 @@
 import copy
+import hashlib
 import json
 import os
 import re
+import tempfile
 import time
+from pathlib import Path
 
 from bs4 import BeautifulSoup, Tag
 
@@ -71,6 +74,9 @@ _BODY_REF_PREFIXES = (
     "discussed in ",
     "pursuant to ",
 )
+
+FILE_OUTPUT_DIR = Path(__file__).resolve().parent / "exports" / "file_output"
+MAX_BASENAME = 180
 
 
 def fetch_filing_html(ticker: str, year: int, quarter: int) -> tuple[bytes, str, str]:
@@ -395,6 +401,152 @@ def _truncate(text: str, max_words: int | None) -> str:
     return " ".join(words[:max_words]) + f"\n\n...[truncated — {remaining:,} more words remaining]"
 
 
+def _slugify_component(value: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", value or "")
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    if not slug:
+        return "unknown"
+    return slug[:64]
+
+
+def _canonical_hash8(payload: dict) -> str:
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:8]
+
+
+def _finalize_basename(
+    readable_basename: str,
+    hash8: str | None,
+    fallback_payload: dict,
+) -> str:
+    suffix = f"_{hash8}" if hash8 else ""
+    candidate = f"{readable_basename}{suffix}"
+    if len(candidate) <= MAX_BASENAME:
+        return candidate
+
+    if not hash8:
+        hash8 = _canonical_hash8(fallback_payload)
+        suffix = f"_{hash8}"
+
+    keep = max(1, MAX_BASENAME - len(suffix))
+    truncated = readable_basename[:keep].rstrip("_") or "file"
+    return f"{truncated}{suffix}"[:MAX_BASENAME]
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+        ) as tmp:
+            tmp.write(content)
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+
+
+def _safe_heading(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _is_unfiltered_sections_request(requested_sections: list[str] | None, all_sections: dict) -> bool:
+    if requested_sections is None:
+        return True
+    requested_set = set(requested_sections)
+    if not requested_set:
+        return False
+    return requested_set == set(all_sections.keys())
+
+
+def _build_sections_file_path(
+    ticker: str,
+    year: int,
+    quarter: int,
+    sections: list[str] | None,
+    all_sections: dict,
+) -> Path:
+    requested_raw = [str(key) for key in sections] if sections is not None else None
+    requested_raw_sorted = sorted(set(requested_raw or []))
+    hash_payload = {
+        "tool": "get_filing_sections",
+        "ticker_raw": ticker,
+        "year": year,
+        "quarter": quarter,
+        "sections_raw_sorted": requested_raw_sorted,
+    }
+
+    ticker_component = _slugify_component(ticker.upper())
+    period_component = f"{quarter}Q{year % 100:02d}"
+    is_unfiltered = _is_unfiltered_sections_request(requested_raw, all_sections)
+
+    if is_unfiltered:
+        readable = f"{ticker_component}_{period_component}_sections"
+        basename = _finalize_basename(readable, hash8=None, fallback_payload=hash_payload)
+    else:
+        readable_keys = [_slugify_component(key) for key in requested_raw_sorted] or ["sections"]
+        readable = f"{ticker_component}_{period_component}_{'_'.join(readable_keys)}"
+        basename = _finalize_basename(
+            readable,
+            hash8=_canonical_hash8(hash_payload),
+            fallback_payload=hash_payload,
+        )
+    return FILE_OUTPUT_DIR / f"{basename}.md"
+
+
+def _write_sections_markdown(
+    ticker: str,
+    year: int,
+    quarter: int,
+    filing_type: str,
+    sections_data: dict,
+    all_sections: dict,
+    requested_sections: list[str] | None,
+    total_word_count: int,
+    is_empty: bool,
+) -> Path:
+    path = _build_sections_file_path(ticker, year, quarter, requested_sections, all_sections)
+    section_keys = ", ".join(sections_data.keys()) if sections_data else "none"
+    lines = [
+        f"# {ticker.upper()} {filing_type} - Q{quarter} FY{year}: Filing Sections",
+        f"> Sections: {section_keys} | Total words: {total_word_count:,}",
+        "---",
+    ]
+
+    if is_empty:
+        lines.append("No content matched filters.")
+    else:
+        for section in sections_data.values():
+            header = _safe_heading(section.get("header", "")) or "Unknown Section"
+            lines.append(f"## SECTION: {header}")
+            lines.append(f"**Word count:** {section.get('word_count', 0):,}")
+            text = section.get("text", "").strip()
+            if text:
+                lines.append(text)
+            tables = section.get("tables", [])
+            if tables:
+                lines.append("### TABLES")
+                for table in tables:
+                    table_text = (table or "").strip()
+                    if table_text:
+                        lines.append(table_text)
+            lines.append("---")
+        if lines[-1] == "---":
+            lines.pop()
+
+    markdown = "\n".join(lines).strip() + "\n"
+    _atomic_write_text(path, markdown)
+    return path.resolve()
+
+
 def get_filing_sections_cached(
     ticker: str,
     year: int,
@@ -402,6 +554,7 @@ def get_filing_sections_cached(
     sections: list[str] | None = None,
     format: str = "summary",
     max_words: int | None = 3000,
+    output: str = "inline",
 ) -> dict:
     """
     Get filing sections with file-based caching.
@@ -439,10 +592,68 @@ def get_filing_sections_cached(
         result["sections_found"] = [key for key in expected if key in all_sections]
         result["sections_missing"] = [key for key in expected if key not in all_sections]
 
+    if output not in ("inline", "file"):
+        raise ValueError("output must be 'inline' or 'file'")
+
     result["metadata"] = {
         "total_word_count": sum(section.get("word_count", 0) for section in result["sections"].values()),
         "section_count": len(result["sections"]),
     }
+    sections_for_file = copy.deepcopy(result["sections"])
+
+    if output == "file":
+        attempted_path = _build_sections_file_path(ticker, year, quarter, sections, all_sections)
+        is_empty = len(sections_for_file) == 0
+        summary_sections = {
+            key: {
+                "header": section.get("header"),
+                "word_count": section.get("word_count", 0),
+            }
+            for key, section in sections_for_file.items()
+        }
+
+        result["ticker"] = ticker.upper()
+        result["year"] = year
+        result["quarter"] = quarter
+        result["output"] = "file"
+        result["is_empty"] = is_empty
+        result["hint"] = "Use Read tool with file_path. Grep '^## SECTION:' for anchors."
+
+        if is_empty:
+            result["sections"] = []
+            result["sections_found"] = []
+            result["metadata"] = {
+                "total_word_count": 0,
+                "total_words": 0,
+                "section_count": 0,
+            }
+        else:
+            result["sections"] = summary_sections
+            result["metadata"]["total_words"] = result["metadata"]["total_word_count"]
+
+        try:
+            file_path = _write_sections_markdown(
+                ticker=ticker,
+                year=year,
+                quarter=quarter,
+                filing_type=result.get("filing_type", ""),
+                sections_data=sections_for_file,
+                all_sections=all_sections,
+                requested_sections=sections,
+                total_word_count=result["metadata"]["total_word_count"],
+                is_empty=is_empty,
+            )
+        except OSError as exc:
+            return {
+                "status": "error",
+                "output": "file",
+                "error_code": "FILE_WRITE_ERROR",
+                "message": str(exc),
+                "file_path": str(attempted_path.resolve()),
+            }
+
+        result["file_path"] = str(file_path)
+        return result
 
     if format == "summary":
         summary_sections = {}

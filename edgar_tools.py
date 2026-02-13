@@ -737,6 +737,7 @@ def get_filing_sections(
     sections: list[str] | None = None,
     format: str = "summary",
     max_words: int | None = 3000,
+    output: str = "inline",
 ) -> dict:
     """
     Parse qualitative sections from SEC 10-K or 10-Q filings.
@@ -762,6 +763,7 @@ def get_filing_sections(
             sections,
             format=format,
             max_words=max_words,
+            output=output,
         )
         return {"status": "success", **result}
     except ValueError as e:

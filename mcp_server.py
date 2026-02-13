@@ -5,6 +5,7 @@ MCP Server for EDGAR Financial Data.
 
 import asyncio
 import json
+import os
 
 from mcp.server import InitializationOptions, Server
 from mcp.server.stdio import stdio_server
@@ -163,6 +164,15 @@ async def list_tools():
                             "Set to null for unlimited (use with caution - large sections can exceed 10K words)."
                         ),
                     },
+                    "output": {
+                        "type": "string",
+                        "enum": ["inline", "file"],
+                        "description": (
+                            "Output mode. 'inline' (default) returns response content inline. "
+                            "'file' writes full untruncated markdown to disk and returns metadata + file_path."
+                        ),
+                        "default": "inline",
+                    },
                 },
                 "required": ["ticker", "year", "quarter"],
             },
@@ -204,6 +214,7 @@ async def call_tool(name: str, arguments: dict):
             sections=arguments.get("sections"),
             format=arguments.get("format", "summary"),
             max_words=arguments.get("max_words", 3000),
+            output=arguments.get("output", "inline"),
         )
     else:
         result = {"status": "error", "message": f"Unknown tool: {name}"}
@@ -224,5 +235,34 @@ async def main():
         )
 
 
+def _kill_previous_instance():
+    """Kill any previous edgar MCP server instance spawned by the same parent session."""
+    import signal
+    from pathlib import Path
+    server_dir = Path(__file__).resolve().parent
+    ppid = os.getppid()
+    pid_file = server_dir / f".edgar_mcp_server_{ppid}.pid"
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+            if old_pid != os.getpid():
+                os.kill(old_pid, signal.SIGTERM)
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+    pid_file.write_text(str(os.getpid()))
+    # Clean up stale PID files from dead sessions
+    for stale in server_dir.glob(".edgar_mcp_server_*.pid"):
+        if stale == pid_file:
+            continue
+        try:
+            session_pid = int(stale.stem.split("_")[-1])
+            os.kill(session_pid, 0)  # check if parent session is alive
+        except (ValueError, ProcessLookupError):
+            stale.unlink(missing_ok=True)
+        except PermissionError:
+            pass  # process exists but owned by another user
+
+
 if __name__ == "__main__":
+    _kill_previous_instance()
     asyncio.run(main())
