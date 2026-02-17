@@ -341,6 +341,12 @@ The `UpdateModel` macro automates updating your financial model with extracted E
 | `/download/<filename>` | GET | Download generated files |
 | `/generate_key` | POST | Kartra webhook for API key generation |
 
+### Financials Value Fields
+
+`/api/financials` facts include both:
+- `current_period_value` and `prior_period_value` (canonical period fields)
+- `current_value` and `prior_value` (aliases matching `/api/metric` selection logic: prefer `visual_*`, then period values)
+
 ### 8-K Fallback
 
 When a 10-Q/10-K filing isn't available yet (common for recent quarters), `/api/financials` automatically falls back to 8-K extraction. Use `source=8k` to explicitly request 8-K data.

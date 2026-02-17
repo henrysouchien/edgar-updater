@@ -125,3 +125,74 @@ def test_successful_response_is_cached(api_ctx, monkeypatch):
 
     cache_path = api_ctx["export_dir"] / "AAPL_4Q25_financials.json"
     assert cache_path.exists()
+
+
+def test_financials_response_hydrates_current_and_prior_value_aliases(api_ctx):
+    cache_path = api_ctx["export_dir"] / "AAPL_FY25_financials.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "status": "success",
+                "metadata": {"ticker": "AAPL", "source": {"filing_type": "10-K"}},
+                "facts": [
+                    {
+                        "tag": "us-gaap:ProceedsFromIssuanceOfDebt",
+                        "date_type": "FY",
+                        "current_period_value": 2805963.0,
+                        "prior_period_value": 556875.0,
+                        "visual_current_value": None,
+                        "visual_prior_value": None,
+                    }
+                ],
+            }
+        )
+    )
+
+    response = _query(api_ctx, ticker="AAPL", year=2025, quarter=4, full_year_mode="true")
+    assert response.status_code == 200
+    payload = response.get_json()
+    fact = payload["facts"][0]
+    assert fact["current_value"] == 2805963.0
+    assert fact["prior_value"] == 556875.0
+
+
+def test_financials_and_metric_agree_on_metric_values(api_ctx, monkeypatch):
+    def fake_pipeline(*args, **kwargs):
+        return {
+            "status": "success",
+            "metadata": {"ticker": "AAPL", "source": {"filing_type": "10-K"}},
+            "facts": [
+                {
+                    "tag": "us-gaap:ProceedsFromIssuanceOfDebt",
+                    "date_type": "FY",
+                    "current_period_value": 2805963.0,
+                    "prior_period_value": 556875.0,
+                    "visual_current_value": None,
+                    "visual_prior_value": None,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(api_ctx["app_module"], "run_edgar_pipeline", fake_pipeline)
+
+    financials_response = _query(api_ctx, ticker="AAPL", year=2025, quarter=4, full_year_mode="true")
+    assert financials_response.status_code == 200
+    financials_payload = financials_response.get_json()
+    fact = financials_payload["facts"][0]
+
+    metric_response = api_ctx["client"].get(
+        "/api/metric",
+        query_string={
+            "key": api_ctx["key"],
+            "ticker": "AAPL",
+            "year": 2025,
+            "quarter": 4,
+            "metric_name": "ProceedsFromIssuanceOfDebt",
+            "full_year_mode": "true",
+        },
+    )
+    assert metric_response.status_code == 200
+    metric_payload = metric_response.get_json()
+    assert metric_payload["status"] == "success"
+    assert metric_payload["matches"][0]["current_value"] == fact["current_value"]
+    assert metric_payload["matches"][0]["prior_value"] == fact["prior_value"]

@@ -6,6 +6,8 @@ MCP Server for EDGAR Financial Data.
 import asyncio
 import json
 import os
+import sys
+from contextlib import redirect_stdout
 
 from mcp.server import InitializationOptions, Server
 from mcp.server.stdio import stdio_server
@@ -14,6 +16,24 @@ from mcp.types import ServerCapabilities, TextContent, Tool
 from edgar_tools import get_filings, get_financials, get_metric, get_filing_sections
 
 server = Server("edgar-financials")
+
+
+def _json_text(payload: dict) -> str:
+    """
+    Serialize tool payloads safely.
+
+    Guardrail: if a tool accidentally returns a non-JSON-serializable object,
+    return a typed error payload instead of crashing the MCP response cycle.
+    """
+    try:
+        return json.dumps(payload, indent=2, default=str)
+    except Exception as exc:
+        fallback = {
+            "status": "error",
+            "message": "Failed to serialize MCP tool response",
+            "details": str(exc),
+        }
+        return json.dumps(fallback, indent=2)
 
 
 @server.list_tools()
@@ -182,44 +202,53 @@ async def list_tools():
 
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
-    if name == "get_filings":
-        result = get_filings(
-            ticker=arguments["ticker"],
-            year=arguments["year"],
-            quarter=arguments["quarter"],
-        )
-    elif name == "get_financials":
-        result = get_financials(
-            ticker=arguments["ticker"],
-            year=arguments["year"],
-            quarter=arguments["quarter"],
-            full_year_mode=arguments.get("full_year_mode", False),
-            source=arguments.get("source", "auto"),
-        )
-    elif name == "get_metric":
-        result = get_metric(
-            ticker=arguments["ticker"],
-            year=arguments["year"],
-            quarter=arguments["quarter"],
-            metric_name=arguments["metric_name"],
-            full_year_mode=arguments.get("full_year_mode", False),
-            source=arguments.get("source", "auto"),
-            date_type=arguments.get("date_type"),
-        )
-    elif name == "get_filing_sections":
-        result = get_filing_sections(
-            ticker=arguments["ticker"],
-            year=arguments["year"],
-            quarter=arguments["quarter"],
-            sections=arguments.get("sections"),
-            format=arguments.get("format", "summary"),
-            max_words=arguments.get("max_words", 3000),
-            output=arguments.get("output", "inline"),
-        )
-    else:
-        result = {"status": "error", "message": f"Unknown tool: {name}"}
+    # MCP stdio requires stdout to contain only JSON-RPC frames.
+    # The EDGAR pipeline prints extensive progress logs; route those to stderr.
+    try:
+        with redirect_stdout(sys.stderr):
+            if name == "get_filings":
+                result = get_filings(
+                    ticker=arguments["ticker"],
+                    year=arguments["year"],
+                    quarter=arguments["quarter"],
+                )
+            elif name == "get_financials":
+                result = get_financials(
+                    ticker=arguments["ticker"],
+                    year=arguments["year"],
+                    quarter=arguments["quarter"],
+                    full_year_mode=arguments.get("full_year_mode", False),
+                    source=arguments.get("source", "auto"),
+                )
+            elif name == "get_metric":
+                result = get_metric(
+                    ticker=arguments["ticker"],
+                    year=arguments["year"],
+                    quarter=arguments["quarter"],
+                    metric_name=arguments["metric_name"],
+                    full_year_mode=arguments.get("full_year_mode", False),
+                    source=arguments.get("source", "auto"),
+                    date_type=arguments.get("date_type"),
+                )
+            elif name == "get_filing_sections":
+                result = get_filing_sections(
+                    ticker=arguments["ticker"],
+                    year=arguments["year"],
+                    quarter=arguments["quarter"],
+                    sections=arguments.get("sections"),
+                    format=arguments.get("format", "summary"),
+                    max_words=arguments.get("max_words", 3000),
+                    output=arguments.get("output", "inline"),
+                )
+            else:
+                result = {"status": "error", "message": f"Unknown tool: {name}"}
+    except Exception as exc:
+        result = {
+            "status": "error",
+            "message": f"Unhandled error in MCP tool '{name}': {exc}",
+        }
 
-    return [TextContent(type="text", text=json.dumps(result, indent=2))]
+    return [TextContent(type="text", text=_json_text(result))]
 
 
 async def main():
