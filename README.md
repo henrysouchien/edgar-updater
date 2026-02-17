@@ -107,7 +107,7 @@ Edgar_updater/
 
 ### MCP Server (Claude Code)
 
-This repo includes an MCP server exposing `get_filings`, `get_financials`, and `get_metric`.
+This repo includes an MCP server exposing `get_filings`, `get_financials`, `get_metric`, `list_metrics`, and `search_metrics`.
 
 1. Install dependencies (includes `mcp`):
    ```bash
@@ -234,10 +234,23 @@ Higher-level functions that wrap the pipeline for MCP and API use:
 
 ### 3. `mcp_server.py` - MCP Server
 
-Exposes three tools via Model Context Protocol for Claude Code/Desktop integration:
+Exposes five tools via Model Context Protocol for Claude Code/Desktop integration:
 - `get_filings` - Filing metadata
 - `get_financials` - Full financial data extraction
 - `get_metric` - Specific metric lookup
+- `list_metrics` - Enumerate available filing metrics/tags for a period
+- `search_metrics` - Query and rank likely metrics before calling `get_metric`
+
+**Agent metric discovery workflow**
+1. Call `search_metrics` with a natural-language query (examples: `long-term debt`, `operating income`, `diluted eps`).
+2. Inspect ranked matches and choose `metric_name` from the top candidate(s).
+3. Call `get_metric` with the chosen `metric_name` to fetch values and YoY math.
+4. Use `list_metrics` when you need a complete candidate list for a filing period.
+
+`search_metrics` performs fuzzy normalization for:
+- hyphen/spacing/camel-case differences (e.g., `long-term debt` -> `LongTermDebt`)
+- multi-word phrase matching (e.g., `operating income` -> `OperatingIncomeLoss`)
+- common finance abbreviations/aliases (e.g., `eps` -> `EarningsPerShare*`)
 
 ### 4. `app.py` - Flask Web Application
 

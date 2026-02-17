@@ -109,9 +109,190 @@ def test_proxy_defaults_source_to_auto(monkeypatch):
     mcp_server_module._proxy_get_metric(
         {"ticker": "AAPL", "year": 2025, "quarter": 4, "metric_name": "revenue"}
     )
+    mcp_server_module._proxy_list_metrics(
+        {"ticker": "AAPL", "year": 2025, "quarter": 4}
+    )
+    mcp_server_module._proxy_search_metrics(
+        {"ticker": "AAPL", "year": 2025, "quarter": 4, "query": "revenue"}
+    )
 
     assert calls[0][1]["source"] == "auto"
     assert calls[1][1]["source"] == "auto"
+    assert calls[2][1]["source"] == "auto"
+    assert calls[3][1]["source"] == "auto"
+
+
+def test_proxy_list_metrics_returns_deduped_catalog(monkeypatch):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+
+    def fake_call_api(path, params, timeout=60):
+        assert path == "/api/financials"
+        return {
+            "status": "success",
+            "metadata": {"source": {"filing_type": "10-Q"}},
+            "facts": [
+                {
+                    "tag": "us-gaap:Revenues",
+                    "date_type": "Q",
+                    "current_period_value": 100.0,
+                    "prior_period_value": 90.0,
+                },
+                {
+                    # Duplicate tag/date_type with no values should be dropped.
+                    "tag": "us-gaap:Revenues",
+                    "date_type": "Q",
+                    "current_period_value": None,
+                    "prior_period_value": None,
+                },
+                {
+                    "tag": "us-gaap:OperatingIncomeLoss",
+                    "date_type": "Q",
+                    "current_period_value": 22.0,
+                    "prior_period_value": 19.0,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    result = mcp_server_module._proxy_list_metrics(
+        {
+            "ticker": "AAPL",
+            "year": 2025,
+            "quarter": 4,
+            "date_type": "Q",
+            "include_values": False,
+            "limit": 10,
+        }
+    )
+
+    assert result["status"] == "success"
+    assert result["date_type_filter"] == "Q"
+    assert result["total_candidates"] == 2
+    assert result["returned_candidates"] == 2
+    assert [m["metric_name"] for m in result["metrics"]] == ["OperatingIncomeLoss", "Revenues"]
+    assert "current_value" not in result["metrics"][0]
+    assert "prior_value" not in result["metrics"][0]
+
+
+def test_proxy_search_metrics_returns_ranked_matches(monkeypatch):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+
+    def fake_call_api(path, params, timeout=60):
+        assert path == "/api/financials"
+        return {
+            "status": "success",
+            "metadata": {"source": {"filing_type": "8-K"}},
+            "facts": [
+                {
+                    "tag": "Diluted net income per share",
+                    "date_type": "Q",
+                    "current_period_value": 2.4,
+                    "prior_period_value": 2.2,
+                },
+                {
+                    "tag": "Net income",
+                    "date_type": "Q",
+                    "current_period_value": 36.0,
+                    "prior_period_value": 33.0,
+                },
+                {
+                    "tag": "Total net sales",
+                    "date_type": "Q",
+                    "current_period_value": 124.0,
+                    "prior_period_value": 118.0,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    result = mcp_server_module._proxy_search_metrics(
+        {
+            "ticker": "AAPL",
+            "year": 2025,
+            "quarter": 1,
+            "query": "diluted net income per share",
+            "date_type": "Q",
+            "limit": 5,
+        }
+    )
+
+    assert result["status"] == "success"
+    assert result["query"] == "diluted net income per share"
+    assert result["total_matches"] >= 1
+    assert result["matches"][0]["metric_name"] == "Diluted net income per share"
+    assert result["matches"][0]["match_score"] >= 90
+
+
+def test_proxy_search_metrics_requires_query(monkeypatch):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+
+    result = mcp_server_module._proxy_search_metrics(
+        {"ticker": "AAPL", "year": 2025, "quarter": 4, "query": "   "}
+    )
+
+    assert result["status"] == "error"
+    assert "query" in result["message"].lower()
+
+
+def test_proxy_search_metrics_handles_hyphen_phrase_and_abbreviation(monkeypatch):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+
+    def fake_call_api(path, params, timeout=60):
+        assert path == "/api/financials"
+        return {
+            "status": "success",
+            "metadata": {"source": {"filing_type": "10-K"}},
+            "facts": [
+                {
+                    "tag": "us-gaap:LongTermDebt",
+                    "date_type": "FY",
+                    "current_period_value": 68836.0,
+                    "prior_period_value": 67000.0,
+                },
+                {
+                    "tag": "us-gaap:OperatingIncomeLoss",
+                    "date_type": "FY",
+                    "current_period_value": 71866.0,
+                    "prior_period_value": 61200.0,
+                },
+                {
+                    "tag": "us-gaap:EarningsPerShareDiluted",
+                    "date_type": "FY",
+                    "current_period_value": 7.17,
+                    "prior_period_value": 6.90,
+                },
+            ],
+        }
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    debt = mcp_server_module._proxy_search_metrics(
+        {"ticker": "AMZN", "year": 2025, "quarter": 4, "query": "long-term debt", "date_type": "FY"}
+    )
+    assert debt["status"] == "success"
+    assert any(match["metric_name"] == "LongTermDebt" for match in debt["matches"])
+
+    op_income = mcp_server_module._proxy_search_metrics(
+        {"ticker": "AMZN", "year": 2025, "quarter": 4, "query": "operating income", "date_type": "FY"}
+    )
+    assert op_income["status"] == "success"
+    assert any(match["metric_name"] == "OperatingIncomeLoss" for match in op_income["matches"])
+
+    eps = mcp_server_module._proxy_search_metrics(
+        {"ticker": "AMZN", "year": 2025, "quarter": 4, "query": "diluted eps", "date_type": "FY"}
+    )
+    assert eps["status"] == "success"
+    assert any(match["metric_name"] == "EarningsPerShareDiluted" for match in eps["matches"])
 
 
 def test_file_output_sanitizes_untrusted_filename_parts(monkeypatch, tmp_path):

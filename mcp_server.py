@@ -13,6 +13,7 @@ import re
 import sys
 import time
 from contextlib import redirect_stdout
+from difflib import SequenceMatcher
 from pathlib import Path
 
 import requests
@@ -68,6 +69,197 @@ def _safe_filename_part(value: str, fallback: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value).strip())
     cleaned = cleaned.strip("-_")
     return cleaned or fallback
+
+
+def _pick_metric_values(fact: dict) -> tuple[object, object]:
+    """Mirror /api/metric value precedence for a fact record."""
+    current = fact.get("current_value")
+    if current is None:
+        current = fact.get("visual_current_value")
+    if current is None:
+        current = fact.get("current_period_value")
+
+    prior = fact.get("prior_value")
+    if prior is None:
+        prior = fact.get("visual_prior_value")
+    if prior is None:
+        prior = fact.get("prior_period_value")
+
+    return current, prior
+
+
+def _split_identifier_tokens(value: object) -> list[str]:
+    """
+    Tokenize metric/tag text for fuzzy matching.
+    Handles namespace separators, camel/Pascal case, and punctuation.
+    """
+    if value is None:
+        return []
+
+    text = str(value)
+    text = text.replace(":", " ").replace("/", " ")
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    text = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", text)
+    text = text.replace("-", " ").replace("_", " ")
+    text = re.sub(r"[^A-Za-z0-9]+", " ", text)
+    return [token for token in text.lower().split() if token]
+
+
+_SEARCH_QUERY_PHRASE_ALIASES = {
+    "eps": ["earnings", "per", "share"],
+    "diluted eps": ["earnings", "per", "share", "diluted"],
+    "basic eps": ["earnings", "per", "share", "basic"],
+    "revenue": ["revenue", "from", "contract", "with", "customer"],
+    "capex": ["capital", "expenditures", "payments", "to", "acquire", "property", "plant", "and", "equipment"],
+    "d a": ["depreciation", "and", "amortization"],
+    "da": ["depreciation", "and", "amortization"],
+    "sg a": ["selling", "general", "and", "administrative"],
+    "sga": ["selling", "general", "and", "administrative"],
+    "r d": ["research", "and", "development"],
+    "cogs": ["cost", "of", "goods", "sold", "cost", "of", "revenue"],
+    "fcf": ["free", "cash", "flow"],
+    "ocf": ["operating", "cash", "flow", "net", "cash", "provided", "by", "operating", "activities"],
+    "ppe": ["property", "plant", "and", "equipment"],
+    "goodwill": ["goodwill"],
+    "shares outstanding": ["common", "stock", "shares", "outstanding"],
+}
+
+_SEARCH_QUERY_TOKEN_ALIASES = {
+    "eps": ["earnings", "per", "share"],
+    "rev": ["revenue"],
+    "capex": ["capital", "expenditures"],
+    "ocf": ["operating", "cash", "flow"],
+    "fcf": ["free", "cash", "flow"],
+    "cogs": ["cost", "of", "revenue"],
+    "ppe": ["property", "plant", "and", "equipment"],
+    "sga": ["selling", "general", "and", "administrative"],
+    "da": ["depreciation", "and", "amortization"],
+}
+
+
+def _expand_query_variants(query: str) -> list[list[str]]:
+    """Return tokenized query variants for robust matching."""
+    base_tokens = _split_identifier_tokens(query)
+    if not base_tokens:
+        return []
+
+    variants = {tuple(base_tokens)}
+
+    base_phrase = " ".join(base_tokens)
+    phrase_alias = _SEARCH_QUERY_PHRASE_ALIASES.get(base_phrase)
+    if phrase_alias:
+        variants.add(tuple(phrase_alias))
+
+    for i, token in enumerate(base_tokens):
+        replacement = _SEARCH_QUERY_TOKEN_ALIASES.get(token)
+        if replacement:
+            expanded = base_tokens[:i] + replacement + base_tokens[i + 1 :]
+            variants.add(tuple(expanded))
+            if token == "eps" and "diluted" in base_tokens:
+                variants.add(tuple(["earnings", "per", "share", "diluted"]))
+            if token == "eps" and "basic" in base_tokens:
+                variants.add(tuple(["earnings", "per", "share", "basic"]))
+
+    return [list(variant) for variant in variants]
+
+
+def _normalize_date_type(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper()
+    return normalized if normalized in {"Q", "YTD", "FY"} else None
+
+
+def _build_metric_catalog(financials_result: dict, date_type: str | None = None) -> list[dict]:
+    """Create a deduplicated metric catalog from /api/financials facts."""
+    facts = financials_result.get("facts")
+    if not isinstance(facts, list):
+        return []
+
+    target_date_type = _normalize_date_type(date_type)
+    catalog = {}
+
+    for fact in facts:
+        if not isinstance(fact, dict):
+            continue
+        raw_tag = fact.get("tag")
+        if not raw_tag or not isinstance(raw_tag, str):
+            continue
+
+        fact_date_type = _normalize_date_type(fact.get("date_type"))
+        if target_date_type and fact_date_type != target_date_type:
+            continue
+
+        bare_tag = raw_tag.split(":", 1)[1] if ":" in raw_tag else raw_tag
+        current, prior = _pick_metric_values(fact)
+        candidate = {
+            "metric_name": bare_tag,
+            "tag": raw_tag,
+            "date_type": fact_date_type,
+            "scale": fact.get("scale"),
+            "current_value": current,
+            "prior_value": prior,
+            "has_value": current is not None or prior is not None,
+        }
+
+        key = (raw_tag.lower(), fact_date_type or "")
+        existing = catalog.get(key)
+        if existing is None:
+            catalog[key] = candidate
+            continue
+
+        # Prefer entries with usable values.
+        if candidate["has_value"] and not existing["has_value"]:
+            catalog[key] = candidate
+
+    return sorted(catalog.values(), key=lambda item: ((item["metric_name"] or "").lower(), item["date_type"] or ""))
+
+
+def _score_metric_match(query: str, metric: dict) -> float:
+    query_variants = _expand_query_variants(query)
+    if not query_variants:
+        return 0.0
+
+    metric_tokens = _split_identifier_tokens(metric.get("metric_name", ""))
+    metric_tokens += _split_identifier_tokens(metric.get("tag", ""))
+    date_type = _normalize_date_type(metric.get("date_type"))
+    if date_type:
+        metric_tokens.append(date_type.lower())
+    if not metric_tokens:
+        return 0.0
+
+    metric_text = " ".join(metric_tokens)
+    metric_compact = "".join(metric_tokens)
+    metric_token_set = set(metric_tokens)
+
+    best_score = 0.0
+    for query_tokens in query_variants:
+        query_text = " ".join(query_tokens)
+        query_compact = "".join(query_tokens)
+
+        if query_text == metric_text or query_compact == metric_compact:
+            best_score = max(best_score, 100.0)
+            continue
+
+        # Phrase and compact containment handle spaces/hyphens/camel-case differences.
+        if query_text and query_text in metric_text:
+            best_score = max(best_score, 94.0)
+        if query_compact and query_compact in metric_compact:
+            best_score = max(best_score, 90.0)
+
+        # Token coverage captures multi-word fuzzy matches.
+        overlap = sum(1 for token in query_tokens if token in metric_token_set)
+        if overlap:
+            coverage = overlap / max(len(query_tokens), 1)
+            best_score = max(best_score, 55.0 + (coverage * 30.0))
+
+        # Final safety net for near matches.
+        if query_compact and metric_compact:
+            ratio = SequenceMatcher(None, query_compact, metric_compact).ratio()
+            if ratio >= 0.55:
+                best_score = max(best_score, 45.0 + (ratio * 35.0))
+
+    return round(best_score, 2)
 
 
 def _deadline_expired(args: dict) -> bool:
@@ -153,6 +345,105 @@ def _proxy_get_metric(args: dict) -> dict:
         "source": args.get("source", "auto"),
         "date_type": args.get("date_type", ""),
     })
+
+
+def _proxy_list_metrics(args: dict) -> dict:
+    date_type = _normalize_date_type(args.get("date_type"))
+    limit = args.get("limit", 200)
+    include_values = bool(args.get("include_values", True))
+    try:
+        limit = max(1, min(int(limit), 1000))
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "limit must be an integer between 1 and 1000"}
+
+    financials = _call_api("/api/financials", {
+        "ticker": args["ticker"],
+        "year": args["year"],
+        "quarter": args["quarter"],
+        "full_year_mode": str(args.get("full_year_mode", False)).lower(),
+        "source": args.get("source", "auto"),
+    })
+    if financials.get("status") != "success":
+        return financials
+
+    catalog = _build_metric_catalog(financials, date_type=date_type)
+    total_candidates = len(catalog)
+    catalog = catalog[:limit]
+
+    if not include_values:
+        for item in catalog:
+            item.pop("current_value", None)
+            item.pop("prior_value", None)
+
+    metadata = financials.get("metadata", {}) if isinstance(financials.get("metadata"), dict) else {}
+    return {
+        "status": "success",
+        "ticker": str(args["ticker"]).upper(),
+        "year": int(args["year"]),
+        "quarter": int(args["quarter"]),
+        "full_year_mode": bool(args.get("full_year_mode", False)),
+        "source": metadata.get("source", {}),
+        "date_type_filter": date_type,
+        "total_candidates": total_candidates,
+        "returned_candidates": len(catalog),
+        "metrics": catalog,
+        "hint": "Pass metric_name from this list into get_metric.",
+    }
+
+
+def _proxy_search_metrics(args: dict) -> dict:
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return {"status": "error", "message": "Missing required parameter: query"}
+
+    date_type = _normalize_date_type(args.get("date_type"))
+    limit = args.get("limit", 20)
+    include_values = bool(args.get("include_values", True))
+    try:
+        limit = max(1, min(int(limit), 100))
+    except (TypeError, ValueError):
+        return {"status": "error", "message": "limit must be an integer between 1 and 100"}
+
+    financials = _call_api("/api/financials", {
+        "ticker": args["ticker"],
+        "year": args["year"],
+        "quarter": args["quarter"],
+        "full_year_mode": str(args.get("full_year_mode", False)).lower(),
+        "source": args.get("source", "auto"),
+    })
+    if financials.get("status") != "success":
+        return financials
+
+    catalog = _build_metric_catalog(financials, date_type=date_type)
+    ranked = []
+    for item in catalog:
+        score = _score_metric_match(query, item)
+        if score <= 0:
+            continue
+        ranked.append({**item, "match_score": round(score, 2)})
+
+    ranked.sort(key=lambda item: (-item["match_score"], item["metric_name"].lower(), item.get("date_type") or ""))
+    ranked = ranked[:limit]
+
+    if not include_values:
+        for item in ranked:
+            item.pop("current_value", None)
+            item.pop("prior_value", None)
+
+    metadata = financials.get("metadata", {}) if isinstance(financials.get("metadata"), dict) else {}
+    return {
+        "status": "success",
+        "ticker": str(args["ticker"]).upper(),
+        "year": int(args["year"]),
+        "quarter": int(args["quarter"]),
+        "full_year_mode": bool(args.get("full_year_mode", False)),
+        "query": query,
+        "date_type_filter": date_type,
+        "source": metadata.get("source", {}),
+        "total_matches": len(ranked),
+        "matches": ranked,
+        "hint": "Use top match.metric_name with get_metric, then validate returned metric tag/value.",
+    }
 
 
 def _proxy_get_filing_sections(args: dict) -> dict:
@@ -421,6 +712,91 @@ async def list_tools():
             },
         ),
         Tool(
+            name="list_metrics",
+            description=(
+                "List available metric tags for a filing period so an agent can choose an exact "
+                "metric_name before calling get_metric."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string", "description": "Stock ticker symbol"},
+                    "year": {"type": "integer", "description": "Fiscal year"},
+                    "quarter": {"type": "integer", "description": "Quarter 1-4"},
+                    "full_year_mode": {
+                        "type": "boolean",
+                        "description": "If true, use annual/full-year context",
+                        "default": False,
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["auto", "8k"],
+                        "default": "auto",
+                        "description": "Data source. 'auto' = try 10-Q/10-K first, fall back to 8-K. '8k' = 8-K only.",
+                    },
+                    "date_type": {
+                        "type": "string",
+                        "enum": ["Q", "YTD", "FY"],
+                        "description": "Optional period filter for listed metrics.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 200,
+                        "description": "Max number of metrics to return (1-1000).",
+                    },
+                    "include_values": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include current/prior values in each listed metric candidate.",
+                    },
+                },
+                "required": ["ticker", "year", "quarter"],
+            },
+        ),
+        Tool(
+            name="search_metrics",
+            description=(
+                "Search available filing metrics by natural-language query (e.g., 'diluted eps', "
+                "'total liabilities', 'operating cash flow') and return ranked candidates."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string", "description": "Stock ticker symbol"},
+                    "year": {"type": "integer", "description": "Fiscal year"},
+                    "quarter": {"type": "integer", "description": "Quarter 1-4"},
+                    "query": {"type": "string", "description": "Search query for metric discovery."},
+                    "full_year_mode": {
+                        "type": "boolean",
+                        "description": "If true, use annual/full-year context",
+                        "default": False,
+                    },
+                    "source": {
+                        "type": "string",
+                        "enum": ["auto", "8k"],
+                        "default": "auto",
+                        "description": "Data source. 'auto' = try 10-Q/10-K first, fall back to 8-K. '8k' = 8-K only.",
+                    },
+                    "date_type": {
+                        "type": "string",
+                        "enum": ["Q", "YTD", "FY"],
+                        "description": "Optional period filter for search results.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Max ranked matches to return (1-100).",
+                    },
+                    "include_values": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Include current/prior values in each match.",
+                    },
+                },
+                "required": ["ticker", "year", "quarter", "query"],
+            },
+        ),
+        Tool(
             name="get_filing_sections",
             description=(
                 "Parse qualitative sections from SEC 10-K or 10-Q filings. "
@@ -513,6 +889,8 @@ _TOOL_DISPATCH = {
     "get_filings": _proxy_get_filings,
     "get_financials": _proxy_get_financials,
     "get_metric": _proxy_get_metric,
+    "list_metrics": _proxy_list_metrics,
+    "search_metrics": _proxy_search_metrics,
     "get_filing_sections": _proxy_get_filing_sections,
 }
 
@@ -520,6 +898,8 @@ _TOOL_TIMEOUT = {
     "get_filings": 30,
     "get_financials": 60,
     "get_metric": 30,
+    "list_metrics": 45,
+    "search_metrics": 45,
     "get_filing_sections": 60,
 }
 
