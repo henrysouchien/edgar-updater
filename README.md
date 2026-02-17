@@ -128,6 +128,14 @@ This repo includes an MCP server exposing `get_filings`, `get_financials`, and `
    }
    ```
 
+#### MCP Stdout Safety
+
+For `mcp_server.py`, stdout must remain JSON-RPC-only. Any diagnostic output
+from tool logic should go to stderr, not stdout.
+
+- `mcp_server.py` routes tool-call stdout to stderr with `redirect_stdout(sys.stderr)`.
+- If you add new MCP tools, keep this contract so stdio framing is never polluted.
+
 ### Installation
 
 1. **Clone or download the project**
