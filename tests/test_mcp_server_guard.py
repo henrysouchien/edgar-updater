@@ -1,5 +1,6 @@
 import importlib
 import json
+from pathlib import Path
 
 import anyio
 
@@ -16,11 +17,11 @@ def test_call_tool_redirects_stdout_to_stderr(monkeypatch, capsys):
 
     mcp_server_module = importlib.reload(mcp_server_module)
 
-    def fake_get_metric(**kwargs):
+    def fake_get_metric(args):
         print("stdout noise from tool")
         return {"status": "success", "matches": []}
 
-    monkeypatch.setattr(mcp_server_module, "get_metric", fake_get_metric)
+    monkeypatch.setitem(mcp_server_module._TOOL_DISPATCH, "get_metric", fake_get_metric)
 
     response = _run(
         mcp_server_module.call_tool(
@@ -51,10 +52,10 @@ def test_call_tool_serializes_non_json_values(monkeypatch):
     class NotJsonSerializable:
         pass
 
-    def fake_get_filings(**kwargs):
+    def fake_get_filings(args):
         return {"status": "success", "opaque": NotJsonSerializable()}
 
-    monkeypatch.setattr(mcp_server_module, "get_filings", fake_get_filings)
+    monkeypatch.setitem(mcp_server_module._TOOL_DISPATCH, "get_filings", fake_get_filings)
 
     response = _run(
         mcp_server_module.call_tool(
@@ -73,10 +74,10 @@ def test_call_tool_wraps_unhandled_exceptions(monkeypatch):
 
     mcp_server_module = importlib.reload(mcp_server_module)
 
-    def boom(**kwargs):
+    def boom(args):
         raise RuntimeError("kaboom")
 
-    monkeypatch.setattr(mcp_server_module, "get_filings", boom)
+    monkeypatch.setitem(mcp_server_module._TOOL_DISPATCH, "get_filings", boom)
 
     response = _run(
         mcp_server_module.call_tool(
@@ -88,3 +89,63 @@ def test_call_tool_wraps_unhandled_exceptions(monkeypatch):
     payload = json.loads(response[0].text)
     assert payload["status"] == "error"
     assert "kaboom" in payload["message"]
+
+
+def test_proxy_defaults_source_to_auto(monkeypatch):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+    calls = []
+
+    def fake_call_api(path, params, timeout=60):
+        calls.append((path, params, timeout))
+        return {"status": "success"}
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    mcp_server_module._proxy_get_financials({"ticker": "AAPL", "year": 2025, "quarter": 4})
+    mcp_server_module._proxy_get_metric(
+        {"ticker": "AAPL", "year": 2025, "quarter": 4, "metric_name": "revenue"}
+    )
+
+    assert calls[0][1]["source"] == "auto"
+    assert calls[1][1]["source"] == "auto"
+
+
+def test_file_output_sanitizes_untrusted_filename_parts(monkeypatch, tmp_path):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+    monkeypatch.setattr(mcp_server_module, "FILE_OUTPUT_DIR", tmp_path)
+
+    def fake_call_api(path, params, timeout=60):
+        return {
+            "status": "success",
+            "filing_type": "10-Q",
+            "sections": {
+                "part1_item2": {
+                    "header": "MD&A",
+                    "word_count": 3,
+                    "text": "sample text here",
+                    "tables": [],
+                }
+            },
+        }
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    result = mcp_server_module._proxy_get_filing_sections(
+        {
+            "ticker": "../../AAPL",
+            "year": 2025,
+            "quarter": 4,
+            "sections": ["../etc/passwd", "part1/item2"],
+            "output": "file",
+        }
+    )
+
+    assert result["status"] == "success"
+    output_path = Path(result["file_path"])
+    assert output_path.is_relative_to(tmp_path.resolve())
+    assert output_path.exists()
+    assert ".." not in output_path.name

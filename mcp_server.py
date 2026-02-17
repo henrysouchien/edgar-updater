@@ -1,30 +1,215 @@
 #!/usr/bin/env python3
 """
 MCP Server for EDGAR Financial Data.
+
+Proxies all tools to the remote EDGAR API (financialmodelupdater.com).
+No local pipeline imports — the MCP server is a pure API client.
 """
 
 import asyncio
 import json
 import os
+import re
 import sys
+import time
 from contextlib import redirect_stdout
+from pathlib import Path
 
+import requests
 from mcp.server import InitializationOptions, Server
 from mcp.server.stdio import stdio_server
 from mcp.types import ServerCapabilities, TextContent, Tool
 
-from edgar_tools import get_filings, get_financials, get_metric, get_filing_sections
+FILE_OUTPUT_DIR = Path(__file__).resolve().parent / "exports" / "file_output"
 
 server = Server("edgar-financials")
 
+# ---------------------------------------------------------------------------
+# Remote API helpers
+# ---------------------------------------------------------------------------
+
+def _get_api_config():
+    base_url = os.getenv("EDGAR_API_URL", "https://www.financialmodelupdater.com").rstrip("/")
+    api_key = os.getenv("EDGAR_API_KEY", "")
+    return base_url, api_key
+
+
+def _call_api(path: str, params: dict, timeout: int = 60) -> dict:
+    """HTTP GET to the remote EDGAR API. Returns parsed JSON or error dict."""
+    base_url, api_key = _get_api_config()
+    if not api_key:
+        return {"status": "error", "message": "EDGAR_API_KEY is not configured"}
+
+    url = f"{base_url}{path}"
+    payload = dict(params)
+    payload["key"] = api_key
+
+    t0 = time.time()
+    try:
+        resp = requests.get(url, params=payload, timeout=timeout)
+    except requests.RequestException as exc:
+        return {"status": "error", "message": f"EDGAR API request failed after {time.time()-t0:.1f}s: {exc}"}
+
+    try:
+        data = resp.json()
+    except ValueError:
+        return {"status": "error", "message": f"Invalid JSON from EDGAR API (HTTP {resp.status_code})"}
+
+    if resp.status_code != 200:
+        if isinstance(data, dict) and data:
+            return data
+        return {"status": "error", "message": f"EDGAR API error (HTTP {resp.status_code})"}
+
+    return data
+
+
+def _safe_filename_part(value: str, fallback: str) -> str:
+    """Normalize untrusted text into a filesystem-safe filename segment."""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value).strip())
+    cleaned = cleaned.strip("-_")
+    return cleaned or fallback
+
+
+# ---------------------------------------------------------------------------
+# Tool dispatch — remote API proxies
+# ---------------------------------------------------------------------------
+
+def _proxy_get_filings(args: dict) -> dict:
+    return _call_api("/api/filings", {
+        "ticker": args["ticker"],
+        "year": args["year"],
+        "quarter": args["quarter"],
+    })
+
+
+def _proxy_get_financials(args: dict) -> dict:
+    return _call_api("/api/financials", {
+        "ticker": args["ticker"],
+        "year": args["year"],
+        "quarter": args["quarter"],
+        "full_year_mode": str(args.get("full_year_mode", False)).lower(),
+        "source": args.get("source", "auto"),
+    })
+
+
+def _proxy_get_metric(args: dict) -> dict:
+    return _call_api("/api/metric", {
+        "ticker": args["ticker"],
+        "year": args["year"],
+        "quarter": args["quarter"],
+        "metric_name": args["metric_name"],
+        "full_year_mode": str(args.get("full_year_mode", False)).lower(),
+        "source": args.get("source", "auto"),
+        "date_type": args.get("date_type", ""),
+    })
+
+
+def _proxy_get_filing_sections(args: dict) -> dict:
+    """Proxy filing sections to remote API, with local file-write for output='file'."""
+    output_mode = args.get("output", "inline")
+    sections_list = args.get("sections")
+
+    # Build remote API params
+    params = {
+        "ticker": args["ticker"],
+        "year": args["year"],
+        "quarter": args["quarter"],
+        "format": args.get("format", "summary"),
+    }
+    if sections_list:
+        params["sections"] = ",".join(sections_list)
+
+    if output_mode == "file":
+        # Fetch full untruncated text for file output
+        params["format"] = "full"
+        params["max_words"] = "none"
+    else:
+        max_words = args.get("max_words", 3000)
+        params["max_words"] = str(max_words) if max_words is not None else "none"
+
+    result = _call_api("/api/sections", params)
+
+    if result.get("status") != "success" or output_mode != "file":
+        return result
+
+    # Write sections to local markdown file
+    ticker = _safe_filename_part(str(args["ticker"]).upper(), "ticker")
+    year = int(args["year"])
+    quarter = int(args["quarter"])
+    filing_type = result.get("filing_type", "")
+    sections_data = result.get("sections", {})
+
+    FILE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Build filename
+    if sections_list:
+        safe_keys = [_safe_filename_part(key, "section") for key in sorted(sections_list)]
+        keys_part = "_".join(safe_keys)
+        filename = f"{ticker}_{quarter}Q{year % 100:02d}_{keys_part}.md"
+    else:
+        filename = f"{ticker}_{quarter}Q{year % 100:02d}_sections.md"
+    file_path = (FILE_OUTPUT_DIR / filename).resolve()
+    root_dir = FILE_OUTPUT_DIR.resolve()
+    if not file_path.is_relative_to(root_dir):
+        return {"status": "error", "message": "Invalid output path"}
+
+    # Build markdown
+    total_words = sum(s.get("word_count", 0) for s in sections_data.values())
+    section_keys = ", ".join(sections_data.keys()) if sections_data else "none"
+    lines = [
+        f"# {ticker} {filing_type} - Q{quarter} FY{year}: Filing Sections",
+        f"> Sections: {section_keys} | Total words: {total_words:,}",
+        "---",
+    ]
+    for section in sections_data.values():
+        header = section.get("header", "Unknown Section")
+        lines.append(f"## SECTION: {header}")
+        lines.append(f"**Word count:** {section.get('word_count', 0):,}")
+        text = section.get("text", "").strip()
+        if text:
+            lines.append(text)
+        tables = section.get("tables", [])
+        if tables:
+            lines.append("### TABLES")
+            for table in tables:
+                table_text = (table or "").strip()
+                if table_text:
+                    lines.append(table_text)
+        lines.append("---")
+    if lines and lines[-1] == "---":
+        lines.pop()
+
+    file_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+    # Return summary (no full text inline) + file_path
+    summary_sections = {
+        key: {"header": s.get("header"), "word_count": s.get("word_count", 0)}
+        for key, s in sections_data.items()
+    }
+    return {
+        "status": "success",
+        "ticker": ticker,
+        "year": year,
+        "quarter": quarter,
+        "filing_type": filing_type,
+        "output": "file",
+        "file_path": str(file_path.resolve()),
+        "hint": "Use Read tool with file_path. Grep '^## SECTION:' for anchors.",
+        "sections": summary_sections,
+        "sections_found": list(sections_data.keys()),
+        "metadata": {
+            "total_word_count": total_words,
+            "total_words": total_words,
+            "section_count": len(sections_data),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# JSON serializer
+# ---------------------------------------------------------------------------
 
 def _json_text(payload: dict) -> str:
-    """
-    Serialize tool payloads safely.
-
-    Guardrail: if a tool accidentally returns a non-JSON-serializable object,
-    return a typed error payload instead of crashing the MCP response cycle.
-    """
     try:
         return json.dumps(payload, indent=2, default=str)
     except Exception as exc:
@@ -35,6 +220,10 @@ def _json_text(payload: dict) -> str:
         }
         return json.dumps(fallback, indent=2)
 
+
+# ---------------------------------------------------------------------------
+# MCP tool definitions
+# ---------------------------------------------------------------------------
 
 @server.list_tools()
 async def list_tools():
@@ -200,65 +389,64 @@ async def list_tools():
     ]
 
 
+# ---------------------------------------------------------------------------
+# MCP tool handler
+# ---------------------------------------------------------------------------
+
+_TOOL_DISPATCH = {
+    "get_filings": _proxy_get_filings,
+    "get_financials": _proxy_get_financials,
+    "get_metric": _proxy_get_metric,
+    "get_filing_sections": _proxy_get_filing_sections,
+}
+
+_TOOL_TIMEOUT = {
+    "get_filings": 30,
+    "get_financials": 60,
+    "get_metric": 30,
+    "get_filing_sections": 60,
+}
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict):
-    # MCP stdio requires stdout to contain only JSON-RPC frames.
-    # The EDGAR pipeline prints extensive progress logs; route those to stderr.
+    handler = _TOOL_DISPATCH.get(name)
+    if not handler:
+        result = {"status": "error", "message": f"Unknown tool: {name}"}
+        return [TextContent(type="text", text=_json_text(result))]
+
+    timeout = _TOOL_TIMEOUT.get(name, 60)
     try:
         with redirect_stdout(sys.stderr):
-            if name == "get_filings":
-                result = get_filings(
-                    ticker=arguments["ticker"],
-                    year=arguments["year"],
-                    quarter=arguments["quarter"],
-                )
-            elif name == "get_financials":
-                result = get_financials(
-                    ticker=arguments["ticker"],
-                    year=arguments["year"],
-                    quarter=arguments["quarter"],
-                    full_year_mode=arguments.get("full_year_mode", False),
-                    source=arguments.get("source", "auto"),
-                )
-            elif name == "get_metric":
-                result = get_metric(
-                    ticker=arguments["ticker"],
-                    year=arguments["year"],
-                    quarter=arguments["quarter"],
-                    metric_name=arguments["metric_name"],
-                    full_year_mode=arguments.get("full_year_mode", False),
-                    source=arguments.get("source", "auto"),
-                    date_type=arguments.get("date_type"),
-                )
-            elif name == "get_filing_sections":
-                result = get_filing_sections(
-                    ticker=arguments["ticker"],
-                    year=arguments["year"],
-                    quarter=arguments["quarter"],
-                    sections=arguments.get("sections"),
-                    format=arguments.get("format", "summary"),
-                    max_words=arguments.get("max_words", 3000),
-                    output=arguments.get("output", "inline"),
-                )
-            else:
-                result = {"status": "error", "message": f"Unknown tool: {name}"}
+            result = await asyncio.wait_for(
+                asyncio.to_thread(handler, arguments),
+                timeout=timeout,
+            )
+    except asyncio.TimeoutError:
+        result = {"status": "error", "message": f"Tool '{name}' timed out after {timeout}s"}
     except Exception as exc:
-        result = {
-            "status": "error",
-            "message": f"Unhandled error in MCP tool '{name}': {exc}",
-        }
+        result = {"status": "error", "message": f"Unhandled error in MCP tool '{name}': {exc}"}
 
     return [TextContent(type="text", text=_json_text(result))]
 
 
+# ---------------------------------------------------------------------------
+# Server lifecycle
+# ---------------------------------------------------------------------------
+
 async def main():
+    # Validate API key on startup
+    _, api_key = _get_api_config()
+    if not api_key:
+        print("WARNING: EDGAR_API_KEY not set — remote API tools will fail", file=sys.stderr)
+
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,
             write_stream,
             InitializationOptions(
                 server_name="edgar-financials",
-                server_version="0.1.0",
+                server_version="0.2.0",
                 capabilities=ServerCapabilities(tools={}),
             ),
         )

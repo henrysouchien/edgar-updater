@@ -1,8 +1,11 @@
 """Tool wrappers for EDGAR pipeline."""
 
+import importlib
+import importlib.util
 import os
 import time
 from collections import defaultdict
+from pathlib import Path
 
 import requests
 
@@ -754,7 +757,23 @@ def get_filing_sections(
         return {"status": "error", "message": err}
 
     try:
-        from section_parser import get_filing_sections_cached
+        try:
+            section_parser_module = importlib.import_module("section_parser")
+        except ModuleNotFoundError as exc:
+            # Deployment fallback: load directly from repository file if PYTHONPATH
+            # import resolution cannot find section_parser as a module.
+            if exc.name != "section_parser":
+                raise
+            module_path = Path(__file__).resolve().with_name("section_parser.py")
+            if not module_path.exists():
+                raise
+            spec = importlib.util.spec_from_file_location("section_parser", str(module_path))
+            if spec is None or spec.loader is None:
+                raise ImportError(f"Failed to load section parser from {module_path}")
+            section_parser_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(section_parser_module)
+
+        get_filing_sections_cached = getattr(section_parser_module, "get_filing_sections_cached")
 
         result = get_filing_sections_cached(
             ticker,
