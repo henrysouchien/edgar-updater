@@ -5,9 +5,13 @@
 
 
 from datetime import datetime, timedelta
+import json
 from lxml import etree
+import os
 import pandas as pd
 import re
+import threading
+import time
 
 from config import (
     TICKER_CIK_URL,
@@ -197,56 +201,135 @@ FINAL_COLS = [
 # === Helper: Lookup CIK from ticker ===
 import requests
 
-def lookup_cik_from_ticker(ticker):
-    
-    """
-    Looks up the SEC Central Index Key (CIK) for a given stock ticker using the SEC's public
-    company-to-CIK mapping.
+_TICKER_MAP_CACHE_PATH = os.path.join(os.path.dirname(__file__), "company_tickers_cache.json")
+_TICKER_MAP_TTL_SECONDS = 24 * 60 * 60
+_ticker_to_cik_cache = None
+_ticker_to_cik_loaded_at = 0.0
+_ticker_map_lock = threading.Lock()
 
-    This function fetches and parses the official JSON file hosted by the SEC, then searches
-    for a case-insensitive match to the given ticker symbol. If found, it returns the CIK
-    as a zero-padded 10-digit string suitable for EDGAR queries.
 
-    Args:
-        ticker (str): Stock ticker symbol (e.g., "AAPL", "MSFT").
+def _normalize_ticker_map(data):
+    """Convert SEC payload into a dict: lowercase ticker -> zero-padded CIK."""
+    mapping = {}
+    if not isinstance(data, dict):
+        return mapping
 
-    Returns:
-        str or None: 10-digit CIK string (e.g., "0000320193") if found, otherwise None.
+    for entry in data.values():
+        if not isinstance(entry, dict):
+            continue
+        ticker = str(entry.get("ticker", "")).strip().lower()
+        cik_raw = entry.get("cik_str")
+        if not ticker or cik_raw is None:
+            continue
+        try:
+            mapping[ticker] = str(int(cik_raw)).zfill(10)
+        except (TypeError, ValueError):
+            continue
+    return mapping
 
-    Notes:
-        - Requires the global constant `TICKER_CIK_URL` to be defined.
-        - Uses the global `HEADERS` dict for HTTP request (must include User-Agent).
-        - Returns None and logs an error if the SEC JSON structure is invalid or lookup fails.
 
-    Example:
-        cik = lookup_cik_from_ticker("AAPL")
-        print(cik)  # → "0000320193"
-    """
-    
+def _load_ticker_map_from_disk():
+    """Load cached SEC ticker map from local disk if available."""
+    if not os.path.exists(_TICKER_MAP_CACHE_PATH):
+        return {}
     try:
-        r = requests.get(TICKER_CIK_URL, headers=HEADERS)
-        r.raise_for_status()
-        data = r.json()
+        with open(_TICKER_MAP_CACHE_PATH, "r") as f:
+            payload = json.load(f)
+        return _normalize_ticker_map(payload)
+    except Exception:
+        return {}
 
-        print(f"✅ Successfully pulled {len(data)} ticker entries from SEC database to check CIK.")
-        
-        # Validate structure before using
-        first_entry = list(data.values())[0]
-        if not ("ticker" in first_entry and "cik_str" in first_entry):
-            print("❌ SEC JSON structure unexpected — keys missing.")
-            return None
-        
-        ticker = ticker.lower()
-        for entry in data.values():
-            if entry["ticker"].lower() == ticker:
-                cik_int = int(entry["cik_str"])
-                return str(cik_int).zfill(10)
-        
-        print(f"⚠️ Ticker '{ticker}' not found in SEC database.")
+
+def _save_ticker_map_to_disk(raw_payload):
+    """Persist SEC ticker map to local disk for process restarts."""
+    try:
+        with open(_TICKER_MAP_CACHE_PATH, "w") as f:
+            json.dump(raw_payload, f)
+    except Exception:
+        pass
+
+
+def _download_ticker_map():
+    """Fetch SEC ticker map with bounded retries."""
+    last_exc = None
+    for attempt in range(3):
+        try:
+            response = requests.get(TICKER_CIK_URL, headers=HEADERS, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            mapping = _normalize_ticker_map(data)
+            if not mapping:
+                raise ValueError("SEC ticker map was empty or malformed")
+            _save_ticker_map_to_disk(data)
+            print(f"✅ Successfully pulled {len(mapping)} ticker entries from SEC database to check CIK.")
+            return mapping
+        except Exception as exc:
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+    raise last_exc
+
+
+def _get_ticker_map():
+    """
+    Return ticker->CIK map with cache-first behavior.
+    Refreshes from SEC at most once per TTL window per process.
+    Falls back to disk cache on SEC failures.
+    """
+    global _ticker_to_cik_cache, _ticker_to_cik_loaded_at
+    now = time.time()
+    cache_fresh = (
+        _ticker_to_cik_cache is not None
+        and (now - _ticker_to_cik_loaded_at) < _TICKER_MAP_TTL_SECONDS
+    )
+    if cache_fresh:
+        return _ticker_to_cik_cache
+
+    with _ticker_map_lock:
+        now = time.time()
+        cache_fresh = (
+            _ticker_to_cik_cache is not None
+            and (now - _ticker_to_cik_loaded_at) < _TICKER_MAP_TTL_SECONDS
+        )
+        if cache_fresh:
+            return _ticker_to_cik_cache
+
+        try:
+            _ticker_to_cik_cache = _download_ticker_map()
+            _ticker_to_cik_loaded_at = now
+            return _ticker_to_cik_cache
+        except Exception as exc:
+            if _ticker_to_cik_cache:
+                print(f"⚠️ SEC ticker map refresh failed, using in-memory cache: {exc}")
+                _ticker_to_cik_loaded_at = now
+                return _ticker_to_cik_cache
+
+            disk_map = _load_ticker_map_from_disk()
+            if disk_map:
+                _ticker_to_cik_cache = disk_map
+                _ticker_to_cik_loaded_at = now
+                print(f"⚠️ SEC ticker map refresh failed, using local cache: {exc}")
+                return _ticker_to_cik_cache
+
+            print(f"❌ Error looking up CIK: {exc}")
+            return {}
+
+
+def lookup_cik_from_ticker(ticker):
+    """
+    Looks up the SEC CIK for a ticker symbol.
+    Returns None if lookup fails or ticker is absent.
+    """
+    if not ticker:
         return None
-    except Exception as e:
-        print(f"❌ Error looking up CIK: {e}")
-        return None
+
+    ticker_map = _get_ticker_map()
+    cik = ticker_map.get(str(ticker).strip().lower())
+    if cik:
+        return cik
+
+    print(f"⚠️ Ticker '{ticker}' not found in SEC database.")
+    return None
 
 
 # In[7]:
@@ -540,6 +623,5 @@ def parse_date(date_input):
 
 
 # In[ ]:
-
 
 

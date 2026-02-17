@@ -6,6 +6,9 @@
 !vba/*.bas
 !templates/
 !templates/*.html
+!tests/
+!tests/*.py
+!pytest.ini
 !.gitignore
 !README.md
 !architecture.md

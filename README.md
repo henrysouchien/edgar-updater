@@ -168,6 +168,19 @@ curl "http://localhost:5000/api/metric?ticker=AAPL&year=2024&quarter=3&metric_na
 curl "http://localhost:5000/trigger_pipeline?ticker=AAPL&year=2024&quarter=3"
 ```
 
+#### Local API Endpoint Tests
+
+Run endpoint tests without requiring local Redis:
+
+```bash
+APP_TESTING=1 FLASK_LIMITER_STORAGE_URI=memory:// python3 -m pytest
+```
+
+Current tests live in `tests/test_api_financials.py` and validate:
+- invalid key/ticker responses
+- CIK lookup failure response shape/status code
+- cache behavior (ignore stale error cache, cache successful responses)
+
 #### Excel Integration
 
 1. **Set up inputs** in the "Raw_data" sheet:
