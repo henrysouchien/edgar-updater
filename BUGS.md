@@ -5,6 +5,64 @@
 - Open bugs in this file: **0**
 - Resolved bugs in this file: **2**
 
+## Prioritized Backlog (Unconfirmed Risks / Tech Debt)
+
+These are not confirmed production bugs. They are prioritized follow-ups based on TODOs and behavior risk.
+
+### 1. P1 - Metric period filtering ambiguity (date_type vs full_year_mode)
+
+- **Evidence**: `edgar_tools.py` date-type filtering TODO and fallback behavior.
+- **Risk**: `get_metric` may return unexpected period matches (`Q`/`FY`/`YTD`), especially for balance-sheet items.
+- **Quick fix**: Define and enforce explicit balance-sheet period handling in `get_metric_from_result()` and date-type normalization rules.
+- **Acceptance criteria**:
+  - Add tests for `full_year_mode=true/false` across flow and balance-sheet metrics.
+  - Returned matches are deterministic and period-appropriate.
+
+### 2. P1 - 8-K discovery window too narrow (`n_limit=8`)
+
+- **Evidence**: `fetch_recent_8k_accessions()` scans only the most recent 8 eligible 8-Ks.
+- **Risk**: Older-quarter requests can miss valid 8-K filings outside this window.
+- **Quick fix**: Make scan depth configurable and/or extend scanning until requested period is found.
+- **Acceptance criteria**:
+  - Add test coverage for an older-quarter request beyond the first 8 records.
+  - 8-K fallback still resolves the correct filing.
+
+### 3. P2 - `/api/filings` 8-K metadata can be incomplete
+
+- **Evidence**: metadata-only path may omit `exhibit_url`; `period_end` may be inferred.
+- **Risk**: Consumers get less reliable filing metadata for audit and traceability.
+- **Quick fix**: In metadata-only mode, do lightweight `index.json` resolution to populate `exhibit_url` without full exhibit download.
+- **Acceptance criteria**:
+  - `/api/filings` includes `exhibit_url` when available.
+  - `period_end` source is explicit/consistent.
+
+### 4. P2 - `end_prior` inconsistency in JSON export facts
+
+- **Evidence**: TODO on API column export notes occasional `end_prior` mismatch behavior.
+- **Risk**: Downstream clients may rely on incorrect prior-period date endpoints.
+- **Quick fix**: Add reconciliation checks during export and fix the mapping path causing stale/mirrored dates.
+- **Acceptance criteria**:
+  - Add assertions or diagnostics for `end_current`/`end_prior` validity.
+  - Known failing case is reproducible and corrected.
+
+### 5. P3 - Missing step-level match diagnostics in pipeline metrics
+
+- **Evidence**: TODO markers for match-step diagnostics logging in quarterly and FY/4Q paths.
+- **Risk**: Regressions in match quality are harder to detect and debug quickly.
+- **Quick fix**: Log per-step match counts/rates to `metrics/` and expose summary metadata.
+- **Acceptance criteria**:
+  - Metrics output includes step-level match stats.
+  - Final run metadata reports key rates in both workflows.
+
+### 6. P3 - Metric alias coverage gaps
+
+- **Evidence**: alias map intentionally incomplete; TODO to expand as gaps are found.
+- **Risk**: Real-world metrics may return false negatives across different filers.
+- **Quick fix**: Add alias expansion workflow driven by missed-tag telemetry and targeted tests.
+- **Acceptance criteria**:
+  - Add coverage for newly discovered high-frequency alias misses.
+  - `get_metric` success rate improves on the tracked missed cases.
+
 ## 1. `/api/financials` fails with "No valid CIK" for valid tickers
 
 **Status**: Resolved (verified in repo on 2026-02-17)
