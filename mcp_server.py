@@ -70,6 +70,17 @@ def _safe_filename_part(value: str, fallback: str) -> str:
     return cleaned or fallback
 
 
+def _deadline_expired(args: dict) -> bool:
+    """Cooperative timeout check for worker-thread handlers."""
+    deadline = args.get("__deadline_monotonic")
+    if deadline is None:
+        return False
+    try:
+        return time.monotonic() >= float(deadline)
+    except (TypeError, ValueError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Tool dispatch — remote API proxies
 # ---------------------------------------------------------------------------
@@ -83,13 +94,53 @@ def _proxy_get_filings(args: dict) -> dict:
 
 
 def _proxy_get_financials(args: dict) -> dict:
-    return _call_api("/api/financials", {
+    output_mode = args.get("output", "inline")
+
+    result = _call_api("/api/financials", {
         "ticker": args["ticker"],
         "year": args["year"],
         "quarter": args["quarter"],
         "full_year_mode": str(args.get("full_year_mode", False)).lower(),
         "source": args.get("source", "auto"),
     })
+
+    if result.get("status") != "success" or output_mode != "file":
+        return result
+
+    # Write full JSON to local file, return summary + file_path
+    ticker = _safe_filename_part(str(args["ticker"]).upper(), "ticker")
+    year = int(args["year"])
+    quarter = int(args["quarter"])
+    source_info = (result.get("metadata", {}).get("source") or result.get("source") or {})
+    filing_type = source_info.get("filing_type", "")
+
+    FILE_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{ticker}_{quarter}Q{year % 100:02d}_financials.json"
+    file_path = (FILE_OUTPUT_DIR / filename).resolve()
+    root_dir = FILE_OUTPUT_DIR.resolve()
+    if not file_path.is_relative_to(root_dir):
+        return {"status": "error", "message": "Invalid output path"}
+    if _deadline_expired(args):
+        return {"status": "error", "message": "Request timed out before file output could be written"}
+
+    file_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+
+    facts = result.get("facts", []) if isinstance(result.get("facts"), list) else []
+
+    return {
+        "status": "success",
+        "ticker": ticker,
+        "year": year,
+        "quarter": quarter,
+        "filing_type": filing_type,
+        "output": "file",
+        "file_path": str(file_path.resolve()),
+        "hint": "Use Read tool with file_path. Use jq or Grep to search for specific metrics.",
+        "metadata": {
+            "total_facts": len(facts),
+            "source": source_info,
+        },
+    }
 
 
 def _proxy_get_metric(args: dict) -> dict:
@@ -152,6 +203,8 @@ def _proxy_get_filing_sections(args: dict) -> dict:
     root_dir = FILE_OUTPUT_DIR.resolve()
     if not file_path.is_relative_to(root_dir):
         return {"status": "error", "message": "Invalid output path"}
+    if _deadline_expired(args):
+        return {"status": "error", "message": "Request timed out before file output could be written"}
 
     # Build markdown
     total_words = sum(s.get("word_count", 0) for s in sections_data.values())
@@ -270,6 +323,16 @@ async def list_tools():
                         "enum": ["auto", "8k"],
                         "default": "auto",
                         "description": "Data source. 'auto' = try 10-Q/10-K first, fall back to 8-K. '8k' = 8-K earnings release only.",
+                    },
+                    "output": {
+                        "type": "string",
+                        "enum": ["inline", "file"],
+                        "default": "inline",
+                        "description": (
+                            "Output mode. 'inline' (default) returns full JSON response inline. "
+                            "'file' writes full JSON to disk and returns summary + file_path. "
+                            "Use 'file' for large responses that may exceed token limits."
+                        ),
                     },
                 },
                 "required": ["ticker", "year", "quarter"],
@@ -416,10 +479,12 @@ async def call_tool(name: str, arguments: dict):
         return [TextContent(type="text", text=_json_text(result))]
 
     timeout = _TOOL_TIMEOUT.get(name, 60)
+    call_args = dict(arguments or {})
+    call_args["__deadline_monotonic"] = time.monotonic() + timeout
     try:
         with redirect_stdout(sys.stderr):
             result = await asyncio.wait_for(
-                asyncio.to_thread(handler, arguments),
+                asyncio.to_thread(handler, call_args),
                 timeout=timeout,
             )
     except asyncio.TimeoutError:

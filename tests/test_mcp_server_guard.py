@@ -149,3 +149,94 @@ def test_file_output_sanitizes_untrusted_filename_parts(monkeypatch, tmp_path):
     assert output_path.is_relative_to(tmp_path.resolve())
     assert output_path.exists()
     assert ".." not in output_path.name
+
+
+def test_financials_file_output_uses_metadata_source_and_fact_count(monkeypatch, tmp_path):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+    monkeypatch.setattr(mcp_server_module, "FILE_OUTPUT_DIR", tmp_path)
+
+    def fake_call_api(path, params, timeout=60):
+        return {
+            "status": "success",
+            "facts": [{"tag": "a"}, {"tag": "b"}, {"tag": "c"}],
+            "metadata": {"source": {"filing_type": "10-K", "accession": "x"}},
+        }
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    result = mcp_server_module._proxy_get_financials(
+        {"ticker": "AAPL", "year": 2025, "quarter": 4, "output": "file"}
+    )
+
+    assert result["status"] == "success"
+    assert result["filing_type"] == "10-K"
+    assert result["metadata"]["total_facts"] == 3
+    output_path = Path(result["file_path"])
+    assert output_path.exists()
+    saved = json.loads(output_path.read_text())
+    assert len(saved["facts"]) == 3
+
+
+def test_financials_file_output_skips_write_if_deadline_expired(monkeypatch, tmp_path):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+    monkeypatch.setattr(mcp_server_module, "FILE_OUTPUT_DIR", tmp_path)
+
+    def fake_call_api(path, params, timeout=60):
+        return {
+            "status": "success",
+            "facts": [{"tag": "a"}],
+            "metadata": {"source": {"filing_type": "10-K"}},
+        }
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    result = mcp_server_module._proxy_get_financials(
+        {
+            "ticker": "AAPL",
+            "year": 2025,
+            "quarter": 4,
+            "output": "file",
+            "__deadline_monotonic": 0.0,
+        }
+    )
+
+    assert result["status"] == "error"
+    assert "timed out" in result["message"].lower()
+    assert not any(tmp_path.iterdir())
+
+
+def test_sections_file_output_skips_write_if_deadline_expired(monkeypatch, tmp_path):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+    monkeypatch.setattr(mcp_server_module, "FILE_OUTPUT_DIR", tmp_path)
+
+    def fake_call_api(path, params, timeout=60):
+        return {
+            "status": "success",
+            "filing_type": "10-Q",
+            "sections": {
+                "part1_item2": {"header": "MD&A", "word_count": 2, "text": "x y", "tables": []}
+            },
+        }
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    result = mcp_server_module._proxy_get_filing_sections(
+        {
+            "ticker": "AAPL",
+            "year": 2025,
+            "quarter": 4,
+            "sections": ["part1_item2"],
+            "output": "file",
+            "__deadline_monotonic": 0.0,
+        }
+    )
+
+    assert result["status"] == "error"
+    assert "timed out" in result["message"].lower()
+    assert not any(tmp_path.iterdir())
