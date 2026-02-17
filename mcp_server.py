@@ -94,7 +94,7 @@ def _proxy_get_filings(args: dict) -> dict:
 
 
 def _proxy_get_financials(args: dict) -> dict:
-    output_mode = args.get("output", "inline")
+    output_mode = args.get("output", "file")
 
     result = _call_api("/api/financials", {
         "ticker": args["ticker"],
@@ -157,8 +157,9 @@ def _proxy_get_metric(args: dict) -> dict:
 
 def _proxy_get_filing_sections(args: dict) -> dict:
     """Proxy filing sections to remote API, with local file-write for output='file'."""
-    output_mode = args.get("output", "inline")
+    output_mode = args.get("output", "file")
     sections_list = args.get("sections")
+    tables_only = args.get("tables_only", False)
 
     # Build remote API params
     params = {
@@ -180,7 +181,39 @@ def _proxy_get_filing_sections(args: dict) -> dict:
 
     result = _call_api("/api/sections", params)
 
-    if result.get("status") != "success" or output_mode != "file":
+    if result.get("status") != "success":
+        return result
+
+    # Normalize section-level table counts for both inline and file modes.
+    for section in result.get("sections", {}).values():
+        if not isinstance(section, dict):
+            continue
+        tables = section.get("tables", []) or []
+        nonempty_tables = [t for t in tables if (t or "").strip()]
+        section["table_count"] = len(nonempty_tables)
+    total_tables = sum(
+        s.get("table_count", 0)
+        for s in result.get("sections", {}).values()
+        if isinstance(s, dict)
+    )
+    if not isinstance(result.get("metadata"), dict):
+        result["metadata"] = {}
+    result["metadata"]["total_table_count"] = total_tables
+
+    # Strip narrative text if tables_only requested
+    if tables_only:
+        for section in result.get("sections", {}).values():
+            if not isinstance(section, dict):
+                continue
+            section.pop("text", None)
+            table_words = 0
+            for table in section.get("tables", []) or []:
+                table_text = (table or "").strip()
+                if table_text:
+                    table_words += len(table_text.split())
+            section["word_count"] = table_words
+
+    if output_mode != "file":
         return result
 
     # Write sections to local markdown file
@@ -211,16 +244,18 @@ def _proxy_get_filing_sections(args: dict) -> dict:
     section_keys = ", ".join(sections_data.keys()) if sections_data else "none"
     lines = [
         f"# {ticker} {filing_type} - Q{quarter} FY{year}: Filing Sections",
-        f"> Sections: {section_keys} | Total words: {total_words:,}",
+        f"> Sections: {section_keys} | Total words: {total_words:,} | Total tables: {total_tables:,}",
         "---",
     ]
     for section in sections_data.values():
         header = section.get("header", "Unknown Section")
         lines.append(f"## SECTION: {header}")
         lines.append(f"**Word count:** {section.get('word_count', 0):,}")
-        text = section.get("text", "").strip()
-        if text:
-            lines.append(text)
+        lines.append(f"**Table count:** {section.get('table_count', 0):,}")
+        if not tables_only:
+            text = section.get("text", "").strip()
+            if text:
+                lines.append(text)
         tables = section.get("tables", [])
         if tables:
             lines.append("### TABLES")
@@ -236,7 +271,11 @@ def _proxy_get_filing_sections(args: dict) -> dict:
 
     # Return summary (no full text inline) + file_path
     summary_sections = {
-        key: {"header": s.get("header"), "word_count": s.get("word_count", 0)}
+        key: {
+            "header": s.get("header"),
+            "word_count": s.get("word_count", 0),
+            "table_count": s.get("table_count", 0),
+        }
         for key, s in sections_data.items()
     }
     return {
@@ -253,6 +292,7 @@ def _proxy_get_filing_sections(args: dict) -> dict:
         "metadata": {
             "total_word_count": total_words,
             "total_words": total_words,
+            "total_table_count": total_tables,
             "section_count": len(sections_data),
         },
     }
@@ -285,7 +325,11 @@ async def list_tools():
             name="get_filings",
             description=(
                 "Fetch SEC filing metadata for a company. Returns list of 10-Q, 10-K, "
-                "and 8-K (earnings release) filings with URLs, dates, and fiscal period assignments."
+                "and 8-K (earnings release) filings with URLs, dates, and fiscal period assignments. "
+                "Share filing URLs with the user for reference, but do NOT attempt to fetch them "
+                "yourself via WebFetch — SEC blocks automated requests. To read filing content, "
+                "use get_filing_sections (for parsed narrative/tables) or get_financials/get_metric "
+                "(for structured XBRL data)."
             ),
             inputSchema={
                 "type": "object",
@@ -327,11 +371,10 @@ async def list_tools():
                     "output": {
                         "type": "string",
                         "enum": ["inline", "file"],
-                        "default": "inline",
+                        "default": "file",
                         "description": (
-                            "Output mode. 'inline' (default) returns full JSON response inline. "
-                            "'file' writes full JSON to disk and returns summary + file_path. "
-                            "Use 'file' for large responses that may exceed token limits."
+                            "Output mode. 'file' (default) writes full JSON to disk and returns summary + file_path. "
+                            "'inline' returns full JSON response inline (may exceed token limits)."
                         ),
                     },
                 },
@@ -383,11 +426,13 @@ async def list_tools():
                 "Parse qualitative sections from SEC 10-K or 10-Q filings. "
                 "Returns narrative text (Risk Factors, MD&A, Business Description, etc.) "
                 "with clean text, embedded tables, and word counts.\n\n"
+                "Default behavior writes to file (output='file'). For lightweight discovery, "
+                "call with output='inline' and format='summary'.\n\n"
                 "Recommended workflow:\n"
-                "1. Call with default format='summary' to see available sections and word counts.\n"
+                "1. Call with output='inline', format='summary' to see available sections and word counts.\n"
                 "2. Identify the section(s) you need.\n"
-                "3. Call again with format='full' and sections=['item_7'] to get text for specific sections.\n\n"
-                "Defaults to summary mode (metadata only - no text content). "
+                "3. Call again with output='file' and sections=['item_7'] for full untruncated export.\n\n"
+                "Inline mode defaults to summary (metadata only - no text content). "
                 "Full text is truncated to max_words (default 3000) per section. "
                 "If format='full' is used without a sections filter, returns a preview (~500 words per section) "
                 "to avoid overwhelming context.\n\n"
@@ -436,14 +481,22 @@ async def list_tools():
                             "Set to null for unlimited (use with caution - large sections can exceed 10K words)."
                         ),
                     },
+                    "tables_only": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "If true, strip narrative text and return only markdown tables from each section. "
+                            "Use when you only need financial data tables, not the surrounding discussion."
+                        ),
+                    },
                     "output": {
                         "type": "string",
                         "enum": ["inline", "file"],
                         "description": (
-                            "Output mode. 'inline' (default) returns response content inline. "
-                            "'file' writes full untruncated markdown to disk and returns metadata + file_path."
+                            "Output mode. 'file' (default) writes full untruncated markdown to disk and returns metadata + file_path. "
+                            "'inline' returns response content inline (may exceed token limits)."
                         ),
-                        "default": "inline",
+                        "default": "file",
                     },
                 },
                 "required": ["ticker", "year", "quarter"],

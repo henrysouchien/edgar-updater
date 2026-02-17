@@ -103,7 +103,9 @@ def test_proxy_defaults_source_to_auto(monkeypatch):
 
     monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
 
-    mcp_server_module._proxy_get_financials({"ticker": "AAPL", "year": 2025, "quarter": 4})
+    mcp_server_module._proxy_get_financials(
+        {"ticker": "AAPL", "year": 2025, "quarter": 4, "output": "inline"}
+    )
     mcp_server_module._proxy_get_metric(
         {"ticker": "AAPL", "year": 2025, "quarter": 4, "metric_name": "revenue"}
     )
@@ -149,6 +151,8 @@ def test_file_output_sanitizes_untrusted_filename_parts(monkeypatch, tmp_path):
     assert output_path.is_relative_to(tmp_path.resolve())
     assert output_path.exists()
     assert ".." not in output_path.name
+    assert result["sections"]["part1_item2"]["table_count"] == 0
+    assert result["metadata"]["total_table_count"] == 0
 
 
 def test_financials_file_output_uses_metadata_source_and_fact_count(monkeypatch, tmp_path):
@@ -240,3 +244,42 @@ def test_sections_file_output_skips_write_if_deadline_expired(monkeypatch, tmp_p
     assert result["status"] == "error"
     assert "timed out" in result["message"].lower()
     assert not any(tmp_path.iterdir())
+
+
+def test_tables_only_removes_text_and_uses_table_word_counts(monkeypatch):
+    import mcp_server as mcp_server_module
+
+    mcp_server_module = importlib.reload(mcp_server_module)
+
+    def fake_call_api(path, params, timeout=60):
+        return {
+            "status": "success",
+            "filing_type": "10-Q",
+            "sections": {
+                "part1_item2": {
+                    "header": "MD&A",
+                    "word_count": 99,
+                    "text": "narrative that should be stripped",
+                    "tables": ["A B C", "1 2 3"],
+                }
+            },
+        }
+
+    monkeypatch.setattr(mcp_server_module, "_call_api", fake_call_api)
+
+    result = mcp_server_module._proxy_get_filing_sections(
+        {
+            "ticker": "AAPL",
+            "year": 2025,
+            "quarter": 4,
+            "output": "inline",
+            "tables_only": True,
+        }
+    )
+
+    assert result["status"] == "success"
+    section = result["sections"]["part1_item2"]
+    assert "text" not in section
+    assert section["word_count"] == 6
+    assert section["table_count"] == 2
+    assert result["metadata"]["total_table_count"] == 2
